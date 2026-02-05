@@ -1,0 +1,18 @@
+# Environment
+.env
+venv/
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+
+# Test audio files (may be copyrighted)
+test_audio/
+
+# Cache (contains audio data)
+.cache/
+
+# IDE
+.vscode/
+.idea/
