@@ -13,12 +13,71 @@ import base64
 import hashlib
 import urllib.request
 import urllib.parse
+import time as time_module
+from contextlib import contextmanager
 from dotenv import load_dotenv
 from openai import OpenAI
 from anthropic import Anthropic
 from streamlit_searchbox import st_searchbox
 
 load_dotenv()
+
+# Animated status messages for long operations (client-side JS animation)
+def create_animated_status_html(messages, interval_ms=2000):
+    """
+    Create HTML/JS that animates through status messages client-side.
+    This works even when Python is blocked on an API call.
+    """
+    messages_js = json.dumps(messages)
+    return f"""
+    <div id="animated-status" style="
+        font-size: 14px;
+        color: #666;
+        padding: 8px 0;
+        font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+    ">
+        <span id="status-icon">💭</span>
+        <span id="status-text">{messages[0]}</span>
+    </div>
+    <script>
+        (function() {{
+            const messages = {messages_js};
+            const textEl = document.getElementById('status-text');
+            let idx = 0;
+            
+            setInterval(() => {{
+                idx = (idx + 1) % messages.length;
+                if (textEl) {{
+                    textEl.style.opacity = 0;
+                    setTimeout(() => {{
+                        textEl.textContent = messages[idx];
+                        textEl.style.opacity = 1;
+                    }}, 150);
+                }}
+            }}, {interval_ms});
+        }})();
+    </script>
+    <style>
+        #status-text {{
+            transition: opacity 0.15s ease;
+        }}
+    </style>
+    """
+
+@contextmanager
+def animated_status(placeholder, messages, interval=2.0):
+    """
+    Show rotating status messages while a long operation runs.
+    Uses client-side JS so it works even when Python is blocked.
+    """
+    # Show animated HTML
+    html = create_animated_status_html(messages, int(interval * 1000))
+    placeholder.markdown(html, unsafe_allow_html=True)
+    try:
+        yield
+    finally:
+        # Clear the animation when done
+        placeholder.empty()
 
 # Simple file-based cache for processed songs
 CACHE_DIR = os.path.join(os.path.dirname(__file__), ".cache")
@@ -74,21 +133,21 @@ def get_youtube_suggestions(query: str) -> list:
     
     return []
 
-SEGMENT_INTERPRETATION_PROMPT = """Translate and romanize these song lyrics. Return ONLY a JSON array, no other text.
+# Single Sonnet prompt for high-quality interpretation
+INTERPRETATION_PROMPT = """Interpret these song lyrics. Return a JSON array with NO other text.
 
-For each line, provide:
-- original: the exact original text
-- romanized: phonetic pronunciation in English letters (e.g., "مرحبا" → "marhaba")
-- translation: English translation (poetic, under 15 words)
-- meaning: brief cultural/emotional context (under 20 words)
+For each numbered lyric, provide these 4 fields:
+- "original": exact original text
+- "romanized": phonetic pronunciation in English letters  
+- "translation": natural English translation (capture the feeling, not word-by-word)
+- "meaning": cultural interpretation in 20-30 words (emotion, metaphors, cultural context)
 
-Return format - ONLY this JSON array, nothing else:
-[
-  {{"original": "...", "romanized": "...", "translation": "...", "meaning": "..."}},
-  ...
-]
+CRITICAL: Output ONLY valid JSON. No markdown, no explanation, no preamble. Just the array.
 
-Lyrics:
+Example format:
+[{{"original":"text","romanized":"pronunciation","translation":"english","meaning":"interpretation"}}]
+
+Lyrics to interpret:
 {segments}
 """
 
@@ -175,28 +234,12 @@ def transcribe_with_timestamps(audio_path: str, language: str = None) -> list:
             else:
                 raise e
 
-# Supported languages for Whisper
-LANGUAGE_OPTIONS = {
-    "auto": "🌐 Auto-detect",
-    "ar": "🇸🇦 Arabic (العربية)",
-    "hi": "🇮🇳 Hindi (हिन्दी)",
-    "ur": "🇵🇰 Urdu (اردو)",
-    "pa": "🇮🇳 Punjabi (ਪੰਜਾਬੀ)",
-    "bn": "🇧🇩 Bengali (বাংলা)",
-    "ta": "🇮🇳 Tamil (தமிழ்)",
-    "te": "🇮🇳 Telugu (తెలుగు)",
-    "fa": "🇮🇷 Persian (فارسی)",
-    "tr": "🇹🇷 Turkish (Türkçe)",
-    "es": "🇪🇸 Spanish (Español)",
-    "fr": "🇫🇷 French (Français)",
-    "ru": "🇷🇺 Russian (Русский)",
-    "ko": "🇰🇷 Korean (한국어)",
-    "ja": "🇯🇵 Japanese (日本語)",
-    "zh": "🇨🇳 Chinese (中文)",
-}
 
 def interpret_segments(segments: list) -> list:
-    """Get interpretation for each segment using Claude (optimized - skips duplicates)."""
+    """
+    Single Sonnet call for high-quality interpretation:
+    romanization + translation + cultural meaning in one request.
+    """
     import time
     client = Anthropic()
     
@@ -204,14 +247,13 @@ def interpret_segments(segments: list) -> list:
     text_segments = [s for s in segments if s['text'].strip()]
     
     if not text_segments:
-        # No text segments - mark all as instrumental
         for seg in segments:
             seg['romanized'] = ''
             seg['translation'] = '(no lyrics detected)'
             seg['meaning'] = ''
         return segments
     
-    # OPTIMIZATION: Deduplicate - only interpret unique lyrics
+    # Deduplicate - only interpret unique lyrics
     unique_texts = []
     seen = set()
     for s in text_segments:
@@ -220,73 +262,79 @@ def interpret_segments(segments: list) -> list:
             unique_texts.append(s['text'])
             seen.add(text_lower)
     
-    # Prepare unique segments text
     segments_text = "\n".join([f"{i+1}. {t}" for i, t in enumerate(unique_texts)])
-    
-    # Retry logic for connection errors
     max_retries = 3
-    response = None
+    
+    # Single Sonnet call for everything
+    import re
     
     for attempt in range(max_retries):
         try:
             response = client.messages.create(
-                model="claude-3-haiku-20240307",  # Faster than Sonnet
-                max_tokens=4000,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": SEGMENT_INTERPRETATION_PROMPT.format(segments=segments_text)
-                    }
-                ]
+                model="claude-sonnet-4-20250514",
+                max_tokens=8000,
+                messages=[{"role": "user", "content": INTERPRETATION_PROMPT.format(segments=segments_text)}]
             )
+            
+            # Parse JSON response with robust extraction
+            response_text = response.content[0].text
+            json_text = response_text
+            
+            # Remove markdown code blocks if present
+            if "```json" in json_text:
+                json_text = json_text.split("```json")[1].split("```")[0]
+            elif "```" in json_text:
+                parts = json_text.split("```")
+                if len(parts) >= 2:
+                    json_text = parts[1]
+            
+            json_text = json_text.strip()
+            
+            # Find the JSON array using bracket matching
+            if not json_text.startswith('['):
+                start = json_text.find('[')
+                if start >= 0:
+                    # Find matching closing bracket
+                    depth = 0
+                    end = start
+                    for i, c in enumerate(json_text[start:], start):
+                        if c == '[':
+                            depth += 1
+                        elif c == ']':
+                            depth -= 1
+                            if depth == 0:
+                                end = i + 1
+                                break
+                    json_text = json_text[start:end]
+            
+            interpretations = json.loads(json_text)
             break
+            
+        except json.JSONDecodeError as e:
+            if attempt < max_retries - 1:
+                time.sleep(1)
+                continue
+            else:
+                # Show helpful error in UI
+                for i, seg in enumerate(segments):
+                    seg['romanized'] = ''
+                    if i == 0:
+                        seg['translation'] = f'⚠️ JSON parsing failed'
+                        seg['meaning'] = f'Response started with: {response_text[:150]}...'
+                    else:
+                        seg['translation'] = '(see first line for error)'
+                        seg['meaning'] = ''
+                return segments
         except Exception as e:
             if attempt < max_retries - 1:
                 time.sleep(2 ** attempt)
                 continue
             else:
-                # Return segments without interpretation on failure
                 for seg in segments:
                     seg['romanized'] = ''
-                    seg['translation'] = '(connection error - try again)'
+                    seg['translation'] = f'(error: {str(e)[:50]})'
                     seg['meaning'] = ''
                 return segments
-    
-    # Parse JSON response
-    response_text = response.content[0].text
-    
-    # Extract JSON from response (handle markdown code blocks)
-    try:
-        json_text = response_text
-        if "```json" in json_text:
-            json_text = json_text.split("```json")[1].split("```")[0]
-        elif "```" in json_text:
-            json_text = json_text.split("```")[1].split("```")[0]
-        
-        # Try to find JSON array in the response
-        json_text = json_text.strip()
-        if not json_text.startswith('['):
-            # Try to find the array in the text
-            start = json_text.find('[')
-            end = json_text.rfind(']') + 1
-            if start >= 0 and end > start:
-                json_text = json_text[start:end]
-        
-        interpretations = json.loads(json_text)
-    except (json.JSONDecodeError, Exception) as e:
-        # If JSON parsing fails, show the error in the first segment
-        error_msg = f"Parse error: {str(e)[:100]}"
-        preview = response_text[:200] if response_text else "Empty response"
-        
-        for i, seg in enumerate(segments):
-            seg['romanized'] = ''
-            if i == 0:
-                seg['translation'] = f'⚠️ {error_msg}'
-                seg['meaning'] = f'Response preview: {preview}...'
-            else:
-                seg['translation'] = '(see first segment for error)'
-                seg['meaning'] = ''
-        return segments
     
     # Build lookup from unique texts to interpretations
     interp_lookup = {}
@@ -294,7 +342,7 @@ def interpret_segments(segments: list) -> list:
         if i < len(interpretations):
             interp_lookup[text.strip().lower()] = interpretations[i]
     
-    # Apply interpretations to ALL segments (including duplicates)
+    # Apply to ALL segments (including duplicates)
     result = []
     for seg in segments:
         text_key = seg['text'].strip().lower()
@@ -561,19 +609,6 @@ else:
     
     st.divider()
     
-    # Language selector (above tabs)
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        st.caption("Select the song's language for better transcription accuracy:")
-    with col2:
-        selected_language = st.selectbox(
-            "Language",
-            options=list(LANGUAGE_OPTIONS.keys()),
-            format_func=lambda x: LANGUAGE_OPTIONS[x],
-            index=0,
-            label_visibility="collapsed"
-        )
-    
     # Input method tabs
     tab1, tab2 = st.tabs(["🔍 Search Song", "🔗 YouTube Link"])
     
@@ -582,7 +617,7 @@ else:
         search_query = st_searchbox(
             get_youtube_suggestions,
             key="song_search",
-            placeholder="Search for a song (e.g., Pasoori, Tum Hi Ho...)",
+            placeholder="Search any song (e.g., La Vie en Rose, Despacito, Gangnam Style...)",
             clear_on_submit=False,
         )
         
@@ -625,7 +660,7 @@ else:
         
         if should_process:
             # Check cache first
-            cached = get_cached_result(st.session_state['selected_url'], selected_language)
+            cached = get_cached_result(st.session_state['selected_url'], "auto")
             if cached:
                 with processing_container:
                     st.success("⚡ Loaded from cache!")
@@ -638,33 +673,95 @@ else:
                 tmp_dir = tempfile.mkdtemp()
                 
                 try:
-                    with st.status("Working on it...", expanded=True) as status:
-                        st.write("⬇️ Downloading audio...")
+                    # Step indicators
+                    steps = ["⬇️ Download", "🎤 Transcribe", "🔮 Interpret"]
+                    
+                    # Progress bar
+                    progress_bar = st.progress(0)
+                    step_display = st.empty()
+                    detail_display = st.empty()
+                    time_display = st.empty()
+                    
+                    start_time = time_module.time()
+                    
+                    def update_progress(step_num, detail=""):
+                        """Update progress UI (step_num is 1-indexed)"""
+                        progress = step_num / 3
+                        progress_bar.progress(progress)
+                        
+                        # Show step indicators with current highlighted
+                        step_text = "  →  ".join([
+                            f"**{s}**" if i == step_num - 1 else f"~~{s}~~" if i < step_num - 1 else s
+                            for i, s in enumerate(steps)
+                        ])
+                        step_display.markdown(f"Step {step_num}/3: {step_text}")
+                        
+                        if detail:
+                            detail_display.caption(detail)
+                        
+                        elapsed = time_module.time() - start_time
+                        time_display.caption(f"⏱️ {elapsed:.1f}s elapsed")
+                    
+                    # Step 1: Download
+                    update_progress(1, "Fetching audio from YouTube...")
+                    download_messages = [
+                        "Connecting to YouTube...",
+                        "Downloading audio stream...",
+                        "Converting to MP3...",
+                    ]
+                    with animated_status(detail_display, download_messages):
                         audio_path = download_audio(st.session_state['selected_url'], tmp_dir)
-                        
-                        lang_name = LANGUAGE_OPTIONS.get(selected_language, "Auto-detect")
-                        st.write(f"🎤 Transcribing ({lang_name})...")
-                        segments = transcribe_with_timestamps(audio_path, language=selected_language)
-                        
-                        # Count unique segments for optimization info
-                        text_segments = [s for s in segments if s['text'].strip()]
-                        unique_count = len(set(s['text'].strip().lower() for s in text_segments))
-                        st.write(f"📝 Found {len(text_segments)} segments ({unique_count} unique)")
-                        
-                        st.write(f"🔮 Interpreting {unique_count} unique segments...")
+                    
+                    # Step 2: Transcribe (auto-detect language)
+                    update_progress(2, "Using Whisper AI (auto-detecting language)...")
+                    transcribe_messages = [
+                        "Uploading audio to OpenAI...",
+                        "Whisper is analyzing the audio...",
+                        "Auto-detecting language...",
+                        "Identifying lyrics and timestamps...",
+                        "This can take 30-60 seconds for longer songs...",
+                        "Still processing... hang tight!",
+                    ]
+                    with animated_status(detail_display, transcribe_messages, interval=2.0):
+                        segments = transcribe_with_timestamps(audio_path)
+                    
+                    # Count unique segments for optimization info
+                    text_segments = [s for s in segments if s['text'].strip()]
+                    unique_count = len(set(s['text'].strip().lower() for s in text_segments))
+                    detail_display.caption(f"✓ Found {len(text_segments)} lyric lines ({unique_count} unique)")
+                    time_module.sleep(0.5)  # Brief pause to show the count
+                    
+                    # Step 3: Interpret with Claude Sonnet
+                    update_progress(3, f"Claude Sonnet interpreting {unique_count} unique lines...")
+                    interpret_messages = [
+                        "Sending lyrics to Claude Sonnet...",
+                        "Generating phonetic pronunciations...",
+                        "Crafting poetic translations...",
+                        "Analyzing cultural context...",
+                        "Finding metaphors and idioms...",
+                        "Exploring emotional subtext...",
+                        "Building rich interpretations...",
+                    ]
+                    with animated_status(detail_display, interpret_messages, interval=2.5):
                         interpreted_segments = interpret_segments(segments)
-                        
-                        st.write("🎨 Building karaoke player...")
-                        audio_base64 = get_audio_base64(audio_path)
-                        
-                        # Determine audio format
-                        audio_ext = os.path.splitext(audio_path)[1].lstrip('.')
-                        if audio_ext == 'webm':
-                            audio_format = 'webm'
-                        else:
-                            audio_format = 'mpeg'
-                        
-                        status.update(label="✅ Ready!", state="complete", expanded=False)
+                    
+                    # Final: Build player
+                    detail_display.caption("Building karaoke player...")
+                    audio_base64 = get_audio_base64(audio_path)
+                    
+                    # Determine audio format
+                    audio_ext = os.path.splitext(audio_path)[1].lstrip('.')
+                    if audio_ext == 'webm':
+                        audio_format = 'webm'
+                    else:
+                        audio_format = 'mpeg'
+                    
+                    # Complete!
+                    progress_bar.progress(1.0)
+                    total_time = time_module.time() - start_time
+                    step_display.markdown("✅ **Ready to play!**")
+                    detail_display.caption(f"Processed {len(text_segments)} lines in {total_time:.1f}s")
+                    time_display.empty()
                     
                     # Store data for display
                     karaoke_data = {
@@ -675,7 +772,7 @@ else:
                     st.session_state['karaoke_data'] = karaoke_data
                     
                     # Save to cache for next time
-                    save_to_cache(st.session_state['selected_url'], selected_language, karaoke_data)
+                    save_to_cache(st.session_state['selected_url'], "auto", karaoke_data)
                     
                     st.rerun()
                     
@@ -686,17 +783,19 @@ else:
     
     # Show welcome message if no song selected and no search
     if 'selected_url' not in st.session_state:
-        st.info("👆 Search for a song or paste a YouTube link")
+        st.info("👆 Search for a song or paste a YouTube link — works with 99+ languages!")
         
         st.markdown("### How it works")
         st.markdown("""
         1. **Search** for any song or paste a YouTube link
-        2. **AI transcribes** the lyrics with timestamps
-        3. **AI interprets** each line's meaning
+        2. **AI transcribes** the lyrics (auto-detects language)
+        3. **AI interprets** meaning with cultural context
         4. **Karaoke mode** syncs lyrics as the song plays
         
+        **Works with any language:** French, Spanish, Arabic, Hindi, Korean, Japanese, Swahili, Portuguese, and many more!
+        
         Perfect for:
-        - 🎶 Understanding songs in languages you don't speak
-        - 📚 Discovering cultural references and metaphors  
-        - 💭 Following along with synchronized lyrics
+        - 🌍 Understanding songs from any culture or language
+        - 📚 Discovering idioms, metaphors, and cultural references  
+        - 🎤 Singing along with phonetic pronunciations
         """)
