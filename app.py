@@ -1,608 +1,229 @@
 """
-Surasa - The essence of melody
-Discover the deeper meaning behind songs in any language
+Surasa - The Song Meaning App
+From melody to meaning, in any language.
+
 Run with: streamlit run app.py
 """
 
-import streamlit as st
-import tempfile
-import subprocess
-import os
-import json
 import base64
-import hashlib
-import urllib.request
-import urllib.parse
-import time as time_module
+import logging
+import os
+import sys
+import tempfile
+import time
 from contextlib import contextmanager
+from typing import Generator
+
+import streamlit as st
 from dotenv import load_dotenv
-from openai import OpenAI
-from anthropic import Anthropic
 from streamlit_searchbox import st_searchbox
+
+# Add the project root to path for imports
+sys.path.insert(0, os.path.dirname(__file__))
+
+from surasa.config.settings import settings, CURATED_SONGS, MOOD_THEMES
+from surasa.utils import (
+    search_youtube,
+    get_video_duration,
+    download_audio,
+    get_youtube_suggestions,
+    get_cached_result,
+    save_to_cache,
+    get_cached_songs,
+    clear_cache,
+)
+from surasa.services import (
+    transcribe_with_timestamps,
+    interpret_segments,
+    get_similar_songs,
+)
+from surasa.templates import (
+    render_karaoke_player,
+    render_shareable_karaoke,
+    render_animated_status,
+    render_skeleton_loading,
+)
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-# Animated status messages for long operations (client-side JS animation)
-def create_animated_status_html(messages, interval_ms=2000):
-    """
-    Create HTML/JS that animates through status messages client-side.
-    This works even when Python is blocked on an API call.
-    """
-    messages_js = json.dumps(messages)
-    return f"""
-    <div id="animated-status" style="
-        font-size: 14px;
-        color: #666;
-        padding: 8px 0;
-        font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-    ">
-        <span id="status-icon">💭</span>
-        <span id="status-text">{messages[0]}</span>
-    </div>
-    <script>
-        (function() {{
-            const messages = {messages_js};
-            const textEl = document.getElementById('status-text');
-            let idx = 0;
-            
-            setInterval(() => {{
-                idx = (idx + 1) % messages.length;
-                if (textEl) {{
-                    textEl.style.opacity = 0;
-                    setTimeout(() => {{
-                        textEl.textContent = messages[idx];
-                        textEl.style.opacity = 1;
-                    }}, 150);
-                }}
-            }}, {interval_ms});
-        }})();
-    </script>
-    <style>
-        #status-text {{
-            transition: opacity 0.15s ease;
-        }}
-    </style>
-    """
 
-@contextmanager
-def animated_status(placeholder, messages, interval=2.0):
-    """
-    Show rotating status messages while a long operation runs.
-    Uses client-side JS so it works even when Python is blocked.
-    """
-    # Show animated HTML
-    html = create_animated_status_html(messages, int(interval * 1000))
-    placeholder.markdown(html, unsafe_allow_html=True)
-    try:
-        yield
-    finally:
-        # Clear the animation when done
-        placeholder.empty()
-
-# Simple file-based cache for processed songs
-CACHE_DIR = os.path.join(os.path.dirname(__file__), ".cache")
-os.makedirs(CACHE_DIR, exist_ok=True)
-
-def get_cache_key(url: str, language: str) -> str:
-    """Generate cache key from URL and language."""
-    return hashlib.md5(f"{url}:{language}".encode()).hexdigest()
-
-def get_cached_result(url: str, language: str) -> dict:
-    """Try to get cached result for a song."""
-    cache_key = get_cache_key(url, language)
-    cache_file = os.path.join(CACHE_DIR, f"{cache_key}.json")
-    if os.path.exists(cache_file):
-        try:
-            with open(cache_file, 'r') as f:
-                return json.load(f)
-        except:
-            pass
-    return None
-
-def save_to_cache(url: str, language: str, data: dict):
-    """Save processed song to cache."""
-    cache_key = get_cache_key(url, language)
-    cache_file = os.path.join(CACHE_DIR, f"{cache_key}.json")
-    try:
-        with open(cache_file, 'w') as f:
-            json.dump(data, f)
-    except:
-        pass  # Fail silently
-
-def get_youtube_suggestions(query: str) -> list:
-    """Get autocomplete suggestions from YouTube."""
-    if not query or len(query) < 2:
-        return []
-    
-    try:
-        encoded_query = urllib.parse.quote(query)
-        url = f"http://suggestqueries.google.com/complete/search?client=youtube&ds=yt&q={encoded_query}"
-        
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=3) as response:
-            data = response.read().decode('utf-8')
-            # Parse the JSONP response
-            # Format: window.google.ac.h(["query",[["suggestion1"],["suggestion2"],...]])
-            start = data.find('[[')
-            end = data.rfind(']]') + 2
-            if start > 0 and end > start:
-                suggestions_data = json.loads(data[start:end])
-                return [s[0] for s in suggestions_data if s][:8]
-    except Exception:
-        pass
-    
-    return []
-
-# Single Sonnet prompt for high-quality interpretation
-INTERPRETATION_PROMPT = """Interpret these song lyrics. Return a JSON array with NO other text.
-
-For each numbered lyric, provide these 4 fields:
-- "original": exact original text
-- "romanized": phonetic pronunciation in English letters  
-- "translation": natural English translation (capture the feeling, not word-by-word)
-- "meaning": cultural interpretation in 20-30 words (emotion, metaphors, cultural context)
-
-CRITICAL: Output ONLY valid JSON. No markdown, no explanation, no preamble. Just the array.
-
-Example format:
-[{{"original":"text","romanized":"pronunciation","translation":"english","meaning":"interpretation"}}]
-
-Lyrics to interpret:
-{segments}
-"""
-
-def search_youtube(query: str, max_results: int = 5) -> list:
-    """Search YouTube and return list of results."""
-    try:
-        result = subprocess.run(
-            ["yt-dlp", f"ytsearch{max_results}:{query}", "--dump-json", "--flat-playlist"],
-            capture_output=True, text=True, timeout=30
-        )
-        
-        results = []
-        for line in result.stdout.strip().split('\n'):
-            if line:
-                data = json.loads(line)
-                results.append({
-                    'title': data.get('title', 'Unknown'),
-                    'url': f"https://www.youtube.com/watch?v={data.get('id', '')}",
-                    'channel': data.get('channel', data.get('uploader', 'Unknown')),
-                    'duration': data.get('duration_string', ''),
-                })
-        return results
-    except Exception as e:
-        st.error(f"Search failed: {e}")
-        return []
-
-def download_audio(url: str, output_dir: str) -> str:
-    """Download audio from YouTube URL (optimized for speed)."""
-    output_template = os.path.join(output_dir, "audio.%(ext)s")
-    
-    # Use lower quality (9 = smallest) - we only need it for transcription
-    result = subprocess.run(
-        ["yt-dlp", "-x", "--audio-format", "mp3", "--audio-quality", "9",
-         "-o", output_template, "--no-playlist", url],
-        capture_output=True, text=True, timeout=120
-    )
-    
-    # Find the downloaded file
-    for f in os.listdir(output_dir):
-        if f.startswith("audio."):
-            return os.path.join(output_dir, f)
-    
-    raise Exception(f"Download failed: {result.stderr}")
-
-def transcribe_with_timestamps(audio_path: str, language: str = None) -> list:
-    """Transcribe audio with word-level timestamps."""
-    import time
-    client = OpenAI()
-    
-    # Retry logic for connection errors
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            with open(audio_path, "rb") as audio_file:
-                # Build API parameters
-                params = {
-                    "model": "whisper-1",
-                    "file": audio_file,
-                    "response_format": "verbose_json",
-                    "timestamp_granularities": ["segment"]
-                }
-                
-                # Add language hint if specified
-                if language and language != "auto":
-                    params["language"] = language
-                
-                transcript = client.audio.transcriptions.create(**params)
-            
-            # Extract segments with timestamps
-            segments = []
-            for seg in transcript.segments:
-                segments.append({
-                    'start': seg.start,
-                    'end': seg.end,
-                    'text': seg.text.strip()
-                })
-            
-            return segments
-            
-        except Exception as e:
-            if attempt < max_retries - 1:
-                time.sleep(2 ** attempt)  # Exponential backoff: 1s, 2s, 4s
-                continue
-            else:
-                raise e
-
-
-def interpret_segments(segments: list) -> list:
-    """
-    Single Sonnet call for high-quality interpretation:
-    romanization + translation + cultural meaning in one request.
-    """
-    import time
-    client = Anthropic()
-    
-    # Filter to segments with actual text
-    text_segments = [s for s in segments if s['text'].strip()]
-    
-    if not text_segments:
-        for seg in segments:
-            seg['romanized'] = ''
-            seg['translation'] = '(no lyrics detected)'
-            seg['meaning'] = ''
-        return segments
-    
-    # Deduplicate - only interpret unique lyrics
-    unique_texts = []
-    seen = set()
-    for s in text_segments:
-        text_lower = s['text'].strip().lower()
-        if text_lower not in seen:
-            unique_texts.append(s['text'])
-            seen.add(text_lower)
-    
-    segments_text = "\n".join([f"{i+1}. {t}" for i, t in enumerate(unique_texts)])
-    max_retries = 3
-    
-    # Single Sonnet call for everything
-    import re
-    
-    for attempt in range(max_retries):
-        try:
-            response = client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=8000,
-                messages=[{"role": "user", "content": INTERPRETATION_PROMPT.format(segments=segments_text)}]
-            )
-            
-            # Parse JSON response with robust extraction
-            response_text = response.content[0].text
-            json_text = response_text
-            
-            # Remove markdown code blocks if present
-            if "```json" in json_text:
-                json_text = json_text.split("```json")[1].split("```")[0]
-            elif "```" in json_text:
-                parts = json_text.split("```")
-                if len(parts) >= 2:
-                    json_text = parts[1]
-            
-            json_text = json_text.strip()
-            
-            # Find the JSON array using bracket matching
-            if not json_text.startswith('['):
-                start = json_text.find('[')
-                if start >= 0:
-                    # Find matching closing bracket
-                    depth = 0
-                    end = start
-                    for i, c in enumerate(json_text[start:], start):
-                        if c == '[':
-                            depth += 1
-                        elif c == ']':
-                            depth -= 1
-                            if depth == 0:
-                                end = i + 1
-                                break
-                    json_text = json_text[start:end]
-            
-            interpretations = json.loads(json_text)
-            break
-            
-        except json.JSONDecodeError as e:
-            if attempt < max_retries - 1:
-                time.sleep(1)
-                continue
-            else:
-                # Show helpful error in UI
-                for i, seg in enumerate(segments):
-                    seg['romanized'] = ''
-                    if i == 0:
-                        seg['translation'] = f'⚠️ JSON parsing failed'
-                        seg['meaning'] = f'Response started with: {response_text[:150]}...'
-                    else:
-                        seg['translation'] = '(see first line for error)'
-                        seg['meaning'] = ''
-                return segments
-        except Exception as e:
-            if attempt < max_retries - 1:
-                time.sleep(2 ** attempt)
-                continue
-            else:
-                for seg in segments:
-                    seg['romanized'] = ''
-                    seg['translation'] = f'(error: {str(e)[:50]})'
-                    seg['meaning'] = ''
-                return segments
-    
-    # Build lookup from unique texts to interpretations
-    interp_lookup = {}
-    for i, text in enumerate(unique_texts):
-        if i < len(interpretations):
-            interp_lookup[text.strip().lower()] = interpretations[i]
-    
-    # Apply to ALL segments (including duplicates)
-    result = []
-    for seg in segments:
-        text_key = seg['text'].strip().lower()
-        if text_key in interp_lookup:
-            interp = interp_lookup[text_key]
-            seg['romanized'] = interp.get('romanized', '')
-            seg['translation'] = interp.get('translation', '')
-            seg['meaning'] = interp.get('meaning', '')
-        else:
-            seg['romanized'] = ''
-            seg['translation'] = ''
-            seg['meaning'] = ''
-        result.append(seg)
-    
-    return result
+# =============================================================================
+# Helper Functions
+# =============================================================================
 
 def get_audio_base64(audio_path: str) -> str:
     """Convert audio file to base64 for embedding."""
     with open(audio_path, "rb") as f:
         return base64.b64encode(f.read()).decode()
 
-def create_karaoke_player(audio_base64: str, segments: list, audio_format: str = "mp3") -> str:
-    """Create HTML/JS karaoke player."""
-    
-    # Convert segments to JSON for JavaScript
-    segments_json = json.dumps(segments)
-    
-    html = f"""
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
-        
-        .karaoke-container {{
-            font-family: 'Inter', sans-serif;
-            max-width: 100%;
-            margin: 0 auto;
-            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-            border-radius: 16px;
-            padding: 24px;
-            color: white;
-        }}
-        
-        .audio-controls {{
-            margin-bottom: 20px;
-        }}
-        
-        .audio-controls audio {{
-            width: 100%;
-            border-radius: 8px;
-        }}
-        
-        .lyrics-container {{
-            height: 400px;
-            overflow-y: auto;
-            scroll-behavior: smooth;
-            padding: 20px;
-            background: rgba(255,255,255,0.05);
-            border-radius: 12px;
-        }}
-        
-        .lyric-segment {{
-            padding: 16px;
-            margin: 8px 0;
-            border-radius: 8px;
-            transition: all 0.3s ease;
-            opacity: 0.4;
-            border-left: 3px solid transparent;
-        }}
-        
-        .lyric-segment.active {{
-            opacity: 1;
-            background: rgba(255,255,255,0.1);
-            border-left: 3px solid #00d4ff;
-            transform: scale(1.02);
-        }}
-        
-        .lyric-segment.past {{
-            opacity: 0.6;
-        }}
-        
-        .original {{
-            font-size: 1.3em;
-            font-weight: 600;
-            margin-bottom: 4px;
-            color: #fff;
-        }}
-        
-        .romanized {{
-            font-size: 1.1em;
-            color: #ffd700;
-            margin-bottom: 8px;
-            font-style: italic;
-            letter-spacing: 0.5px;
-        }}
-        
-        .translation {{
-            font-size: 1.1em;
-            color: #00d4ff;
-            margin-bottom: 8px;
-            font-weight: 500;
-        }}
-        
-        .meaning {{
-            font-size: 0.85em;
-            color: #b8b8b8;
-            padding: 8px 12px;
-            background: rgba(0, 212, 255, 0.1);
-            border-radius: 6px;
-            margin-top: 4px;
-        }}
-        
-        .time-badge {{
-            font-size: 0.75em;
-            color: #666;
-            margin-bottom: 4px;
-        }}
-        
-        .progress-info {{
-            display: flex;
-            justify-content: space-between;
-            font-size: 0.85em;
-            color: #888;
-            margin-top: 8px;
-        }}
-    </style>
-    
-    <div class="karaoke-container">
-        <div class="audio-controls">
-            <audio id="audioPlayer" controls>
-                <source src="data:audio/{audio_format};base64,{audio_base64}" type="audio/{audio_format}">
-            </audio>
-            <div class="progress-info">
-                <span id="currentSegment">Ready to play</span>
-                <span id="timeDisplay">0:00 / 0:00</span>
-            </div>
-        </div>
-        
-        <div class="lyrics-container" id="lyricsContainer">
-        </div>
-    </div>
-    
-    <script>
-        const segments = {segments_json};
-        const audio = document.getElementById('audioPlayer');
-        const container = document.getElementById('lyricsContainer');
-        const currentSegmentDisplay = document.getElementById('currentSegment');
-        const timeDisplay = document.getElementById('timeDisplay');
-        
-        // Build lyrics HTML
-        let lyricsHTML = '';
-        segments.forEach((seg, idx) => {{
-            if (seg.text) {{
-                const romanized = seg.romanized || '';
-                const translation = seg.translation || '';
-                const meaning = seg.meaning || '';
-                lyricsHTML += `
-                    <div class="lyric-segment" id="segment-${{idx}}" data-start="${{seg.start}}" data-end="${{seg.end}}">
-                        <div class="time-badge">${{formatTime(seg.start)}}</div>
-                        <div class="original">${{seg.text}}</div>
-                        ${{romanized ? `<div class="romanized">${{romanized}}</div>` : ''}}
-                        <div class="translation">${{translation || '(translating...)'}}</div>
-                        ${{meaning ? `<div class="meaning">${{meaning}}</div>` : ''}}
-                    </div>
-                `;
-            }}
-        }});
-        container.innerHTML = lyricsHTML;
-        
-        function formatTime(seconds) {{
-            const mins = Math.floor(seconds / 60);
-            const secs = Math.floor(seconds % 60);
-            return `${{mins}}:${{secs.toString().padStart(2, '0')}}`;
-        }}
-        
-        // Sync lyrics with audio
-        audio.addEventListener('timeupdate', () => {{
-            const currentTime = audio.currentTime;
-            const duration = audio.duration || 0;
-            timeDisplay.textContent = `${{formatTime(currentTime)}} / ${{formatTime(duration)}}`;
-            
-            let activeIdx = -1;
-            segments.forEach((seg, idx) => {{
-                const el = document.getElementById(`segment-${{idx}}`);
-                if (!el) return;
-                
-                if (currentTime >= seg.start && currentTime < seg.end) {{
-                    el.classList.add('active');
-                    el.classList.remove('past');
-                    activeIdx = idx;
-                    
-                    // Scroll into view
-                    el.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
-                }} else if (currentTime >= seg.end) {{
-                    el.classList.remove('active');
-                    el.classList.add('past');
-                }} else {{
-                    el.classList.remove('active', 'past');
-                }}
-            }});
-            
-            if (activeIdx >= 0) {{
-                currentSegmentDisplay.textContent = `Line ${{activeIdx + 1}} of ${{segments.length}}`;
-            }}
-        }});
-        
-        // Click on segment to seek
-        document.querySelectorAll('.lyric-segment').forEach(el => {{
-            el.addEventListener('click', () => {{
-                const start = parseFloat(el.dataset.start);
-                audio.currentTime = start;
-                audio.play();
-            }});
-        }});
-    </script>
-    """
-    
-    return html
 
-# Page config
+@contextmanager
+def animated_status(placeholder, messages: list, interval: float = 2.0) -> Generator:
+    """
+    Show rotating status messages while a long operation runs.
+    Uses client-side JS so it works even when Python is blocked.
+    """
+    html = render_animated_status(messages, int(interval * 1000))
+    placeholder.markdown(html, unsafe_allow_html=True)
+    try:
+        yield
+    finally:
+        placeholder.empty()
+
+
+def show_skeleton_loading(placeholder, num_lines: int = 5):
+    """Show a subtle skeleton loading UI."""
+    with placeholder.container():
+        st.markdown(render_skeleton_loading(num_lines), unsafe_allow_html=True)
+
+
+# =============================================================================
+# Page Configuration
+# =============================================================================
+
 st.set_page_config(
     page_title="Surasa",
     page_icon="🎶",
     layout="wide"
 )
 
-# Header
-st.title("🎶 Surasa")
-st.markdown("*सुर + रस — The essence of melody*")
-
-# Check if we have karaoke data to display (song is ready)
-has_karaoke = 'karaoke_data' in st.session_state
-
-# If song is ready, show karaoke player FIRST (front and center)
-if has_karaoke:
-    st.markdown(f"### 🎤 {st.session_state.get('selected_title', 'Now Playing')}")
-    st.caption("Click any line to jump to that part of the song")
-    
-    data = st.session_state['karaoke_data']
-    karaoke_html = create_karaoke_player(
-        data['audio_base64'],
-        data['segments'],
-        data['audio_format']
-    )
-    
-    st.components.v1.html(karaoke_html, height=550, scrolling=False)
-    
-    # Button to search for another song
-    st.divider()
-    if st.button("🎶 Discover Another Song", use_container_width=True):
-        for key in ['selected_url', 'selected_title', 'karaoke_data']:
-            if key in st.session_state:
-                del st.session_state[key]
+# Handle similar song search from celebration overlay
+similar_search_query = st.query_params.get('similar_search', None)
+if similar_search_query:
+    st.query_params.clear()
+    results = search_youtube(similar_search_query)
+    if results:
+        st.session_state['selected_url'] = results[0]['url']
+        st.session_state['selected_title'] = results[0]['title']
+        if 'karaoke_data' in st.session_state:
+            del st.session_state['karaoke_data']
         st.rerun()
 
-else:
-    # Show search interface only when no song is playing
+
+# =============================================================================
+# Header
+# =============================================================================
+
+st.title("🎶 Surasa")
+st.markdown("*From melody to meaning, in any language*")
+
+
+# =============================================================================
+# Main Content
+# =============================================================================
+
+has_karaoke = 'karaoke_data' in st.session_state
+
+if has_karaoke:
+    # -------------------------------------------------------------------------
+    # Karaoke Player View
+    # -------------------------------------------------------------------------
+    st.markdown(f"### 🎤 {st.session_state.get('selected_title', 'Now Playing')}")
+    st.caption("Click any line to jump • **Shortcuts:** Space = play/pause, ←→ = skip 5s, F = focus mode")
     
-    # Processing section (appears at top when processing)
+    data = st.session_state['karaoke_data']
+    mood = data.get('mood', 'playful')
+    summary = data.get('summary', '')
+    similar_songs = data.get('similar_songs', [])
+    
+    karaoke_html = render_karaoke_player(
+        data['audio_base64'],
+        data['segments'],
+        data['audio_format'],
+        mood,
+        summary,
+        similar_songs
+    )
+    
+    st.components.v1.html(karaoke_html, height=settings.ui.player_height, scrolling=False)
+    
+    # Similar Songs section
+    if similar_songs:
+        st.markdown("#### 🎵 You might also like")
+        cols = st.columns(min(len(similar_songs), settings.ui.max_similar_songs))
+        for idx, song in enumerate(similar_songs[:settings.ui.max_similar_songs]):
+            with cols[idx]:
+                song_title_text = song.get('title', '')
+                reason_text = song.get('reason', '')
+                if st.button(
+                    f"**{song_title_text}**\n\n_{reason_text}_",
+                    key=f"similar_{idx}",
+                    use_container_width=True
+                ):
+                    results = search_youtube(song_title_text)
+                    if results:
+                        st.session_state['selected_url'] = results[0]['url']
+                        st.session_state['selected_title'] = results[0]['title']
+                        if 'karaoke_data' in st.session_state:
+                            del st.session_state['karaoke_data']
+                        st.rerun()
+    
+    # Share and action buttons
+    st.divider()
+    
+    song_title = st.session_state.get('selected_title', 'a song')
+    segments = data.get('segments', [])
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        shareable_html = render_shareable_karaoke(
+            song_title,
+            data['audio_base64'],
+            data['segments'],
+            data['audio_format']
+        )
+        safe_filename = "".join(c if c.isalnum() or c in (' ', '-', '_') else '' for c in song_title)
+        st.download_button(
+            "🎁 Share Karaoke Experience",
+            shareable_html,
+            file_name=f"{safe_filename}_karaoke.html",
+            mime="text/html",
+            use_container_width=True,
+            help="Download an HTML file with the full karaoke player"
+        )
+    
+    with col2:
+        full_lyrics = f"🎶 {song_title}\n\n"
+        for seg in segments:
+            if seg.get('text'):
+                full_lyrics += f"{seg['text']}\n"
+                if seg.get('romanized'):
+                    full_lyrics += f"({seg['romanized']})\n"
+                if seg.get('translation'):
+                    full_lyrics += f"→ {seg['translation']}\n"
+                if seg.get('meaning'):
+                    full_lyrics += f"💭 {seg['meaning']}\n"
+                full_lyrics += "\n"
+        
+        st.download_button(
+            "📝 Download Lyrics",
+            full_lyrics,
+            file_name=f"{safe_filename}_lyrics.txt",
+            mime="text/plain",
+            use_container_width=True
+        )
+    
+    with col3:
+        if st.button("🎶 New Song", use_container_width=True):
+            for key in ['selected_url', 'selected_title', 'karaoke_data']:
+                if key in st.session_state:
+                    del st.session_state[key]
+            st.rerun()
+
+else:
+    # -------------------------------------------------------------------------
+    # Search Interface
+    # -------------------------------------------------------------------------
     processing_container = st.container()
     
-    # Check if we're currently processing - show that first
     if 'selected_url' in st.session_state and 'karaoke_data' not in st.session_state:
         with processing_container:
             st.info(f"🎵 Processing: **{st.session_state.get('selected_title', 'Song')}**")
@@ -610,10 +231,9 @@ else:
     st.divider()
     
     # Input method tabs
-    tab1, tab2 = st.tabs(["🔍 Search Song", "🔗 YouTube Link"])
+    tab1, tab2, tab3, tab4 = st.tabs(["🔍 Search", "🔗 YouTube Link", "🌍 Browse by Language", "📚 History"])
     
     with tab1:
-        # Autocomplete search box
         search_query = st_searchbox(
             get_youtube_suggestions,
             key="song_search",
@@ -628,17 +248,20 @@ else:
             if results:
                 st.markdown("### Select a song:")
                 for i, result in enumerate(results):
-                    col1, col2 = st.columns([4, 1])
-                    with col1:
-                        st.markdown(f"**{result['title']}**")
-                        st.caption(f"{result['channel']} • {result['duration']}")
-                    with col2:
-                        if st.button("▶️ Play", key=f"select_{i}"):
+                    col_thumb, col_info = st.columns([1, 6])
+                    with col_thumb:
+                        if result.get('thumbnail'):
+                            st.image(result['thumbnail'], width=settings.ui.thumbnail_width)
+                    with col_info:
+                        if st.button(
+                            f"▶️  **{result['title']}**\n\n{result['channel']} • {result['duration']}",
+                            key=f"select_{i}",
+                            use_container_width=True
+                        ):
                             st.session_state['selected_url'] = result['url']
                             st.session_state['selected_title'] = result['title']
                             st.session_state['auto_process'] = True
                             st.rerun()
-                    st.divider()
     
     with tab2:
         youtube_url = st.text_input(
@@ -647,62 +270,134 @@ else:
             key="youtube_url_input"
         )
         
-        # Auto-process when URL is entered
         if youtube_url and ("youtube.com" in youtube_url or "youtu.be" in youtube_url):
             st.session_state['selected_url'] = youtube_url
             st.session_state['selected_title'] = "YouTube Video"
             st.session_state['auto_process'] = True
     
-    # Process selected song
-    if 'selected_url' in st.session_state:
-        # Auto-process if no karaoke data yet
-        should_process = 'karaoke_data' not in st.session_state
+    with tab3:
+        st.markdown("### Discover songs by language")
+        st.caption("Curated classics and hits — click to play instantly")
         
-        if should_process:
-            # Check cache first
-            cached = get_cached_result(st.session_state['selected_url'], "auto")
-            if cached:
-                with processing_container:
-                    st.success("⚡ Loaded from cache!")
-                st.session_state['karaoke_data'] = cached
-                st.rerun()
+        selected_language = st.selectbox(
+            "Choose a language",
+            options=list(CURATED_SONGS.keys()),
+            index=0,
+            key="browse_language"
+        )
+        
+        if selected_language:
+            songs = CURATED_SONGS.get(selected_language, [])
+            for i, song in enumerate(songs):
+                col_icon, col_info = st.columns([1, 6])
+                with col_icon:
+                    st.markdown(
+                        f'<div style="width:80px;height:60px;background:linear-gradient(135deg,#1a1a2e,#16213e);'
+                        f'border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:24px;">🎵</div>',
+                        unsafe_allow_html=True
+                    )
+                with col_info:
+                    if st.button(
+                        f"▶️  **{song['title']}**\n\nby {song['artist']}",
+                        key=f"curated_{selected_language}_{i}",
+                        use_container_width=True
+                    ):
+                        with st.spinner("Finding best version..."):
+                            results = search_youtube(song['query'], max_results=1)
+                        if results:
+                            st.session_state['selected_url'] = results[0]['url']
+                            st.session_state['selected_title'] = f"{song['title']} - {song['artist']}"
+                            st.session_state['auto_process'] = True
+                            st.rerun()
+                        else:
+                            st.error("Could not find this song on YouTube")
+    
+    with tab4:
+        cached_songs = get_cached_songs()
+        
+        if cached_songs:
+            st.markdown("### Previously played songs")
+            st.caption("Click to replay instantly (no processing needed)")
             
-            # Show processing status at the TOP (in the container we created earlier)
-            with processing_container:
-                # Create temp directory
-                tmp_dir = tempfile.mkdtemp()
-                
+            for i, song in enumerate(cached_songs):
+                col_thumb, col_info = st.columns([1, 6])
+                with col_thumb:
+                    if song.get('thumbnail'):
+                        st.image(song['thumbnail'], width=settings.ui.thumbnail_width)
+                with col_info:
+                    if st.button(
+                        f"▶️  **{song['title']}**\n\nPlayed: {song['cached_at']}",
+                        key=f"history_{i}",
+                        use_container_width=True
+                    ):
+                        st.session_state['selected_url'] = song['url']
+                        st.session_state['selected_title'] = song['title']
+                        cached_data = get_cached_result(song['url'], "auto")
+                        if cached_data:
+                            st.session_state['karaoke_data'] = cached_data
+                        st.rerun()
+            
+            st.divider()
+            if st.button("🗑️ Clear History", key="clear_history"):
                 try:
-                    # Step indicators
-                    steps = ["⬇️ Download", "🎤 Transcribe", "🔮 Interpret"]
-                    
-                    # Progress bar
+                    deleted = clear_cache()
+                    st.success(f"Cleared {deleted} cached songs")
+                except Exception as e:
+                    st.error(f"Failed to clear history: {e}")
+                st.rerun()
+        else:
+            st.info("No songs in history yet. Search for a song to get started!")
+    
+    # -------------------------------------------------------------------------
+    # Processing Pipeline
+    # -------------------------------------------------------------------------
+    if 'selected_url' in st.session_state and 'karaoke_data' not in st.session_state:
+        # Check cache first
+        cached = get_cached_result(st.session_state['selected_url'], "auto")
+        if cached:
+            st.session_state['karaoke_data'] = cached
+            st.rerun()
+        
+        if st.session_state.get('auto_process'):
+            del st.session_state['auto_process']
+            
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                try:
+                    # Progress tracking
                     progress_bar = st.progress(0)
                     step_display = st.empty()
                     detail_display = st.empty()
                     time_display = st.empty()
+                    start_time = time.time()
                     
-                    start_time = time_module.time()
+                    steps = ["Download", "Transcribe", "Interpret"]
                     
-                    def update_progress(step_num, detail=""):
-                        """Update progress UI (step_num is 1-indexed)"""
-                        progress = step_num / 3
-                        progress_bar.progress(progress)
-                        
-                        # Show step indicators with current highlighted
+                    def update_progress(step_num: int, detail: str = ""):
+                        progress_bar.progress(step_num / 3)
                         step_text = "  →  ".join([
                             f"**{s}**" if i == step_num - 1 else f"~~{s}~~" if i < step_num - 1 else s
                             for i, s in enumerate(steps)
                         ])
                         step_display.markdown(f"Step {step_num}/3: {step_text}")
-                        
                         if detail:
                             detail_display.caption(detail)
-                        
-                        elapsed = time_module.time() - start_time
+                        elapsed = time.time() - start_time
                         time_display.caption(f"⏱️ {elapsed:.1f}s elapsed")
                     
-                    # Step 1: Download
+                    # Step 1: Check duration and download
+                    update_progress(1, "Checking video duration...")
+                    
+                    video_duration = get_video_duration(st.session_state['selected_url'])
+                    if video_duration > settings.audio.max_duration_seconds:
+                        mins = video_duration // 60
+                        st.error(f"⏱️ This video is {mins} minutes long. Please choose a song under 10 minutes.")
+                        progress_bar.empty()
+                        step_display.empty()
+                        detail_display.empty()
+                        time_display.empty()
+                        del st.session_state['selected_url']
+                        st.stop()
+                    
                     update_progress(1, "Fetching audio from YouTube...")
                     download_messages = [
                         "Connecting to YouTube...",
@@ -712,8 +407,12 @@ else:
                     with animated_status(detail_display, download_messages):
                         audio_path = download_audio(st.session_state['selected_url'], tmp_dir)
                     
-                    # Step 2: Transcribe (auto-detect language)
+                    # Step 2: Transcribe
                     update_progress(2, "Using Whisper AI (auto-detecting language)...")
+                    
+                    skeleton_placeholder = st.empty()
+                    show_skeleton_loading(skeleton_placeholder, 6)
+                    
                     transcribe_messages = [
                         "Uploading audio to OpenAI...",
                         "Whisper is analyzing the audio...",
@@ -725,13 +424,12 @@ else:
                     with animated_status(detail_display, transcribe_messages, interval=2.0):
                         segments = transcribe_with_timestamps(audio_path)
                     
-                    # Count unique segments for optimization info
                     text_segments = [s for s in segments if s['text'].strip()]
                     unique_count = len(set(s['text'].strip().lower() for s in text_segments))
                     detail_display.caption(f"✓ Found {len(text_segments)} lyric lines ({unique_count} unique)")
-                    time_module.sleep(0.5)  # Brief pause to show the count
+                    time.sleep(0.5)
                     
-                    # Step 3: Interpret with Claude Sonnet
+                    # Step 3: Interpret
                     update_progress(3, f"Claude Sonnet interpreting {unique_count} unique lines...")
                     interpret_messages = [
                         "Sending lyrics to Claude Sonnet...",
@@ -743,45 +441,59 @@ else:
                         "Building rich interpretations...",
                     ]
                     with animated_status(detail_display, interpret_messages, interval=2.5):
-                        interpreted_segments = interpret_segments(segments)
+                        interpreted_segments, detected_mood, song_summary = interpret_segments(segments)
                     
-                    # Final: Build player
+                    # Get similar songs
+                    detail_display.caption("Finding similar songs...")
+                    similar_songs = get_similar_songs(
+                        st.session_state.get('selected_title', ''),
+                        detected_mood,
+                        song_summary
+                    )
+                    
+                    # Build player
                     detail_display.caption("Building karaoke player...")
                     audio_base64 = get_audio_base64(audio_path)
                     
-                    # Determine audio format
                     audio_ext = os.path.splitext(audio_path)[1].lstrip('.')
-                    if audio_ext == 'webm':
-                        audio_format = 'webm'
-                    else:
-                        audio_format = 'mpeg'
+                    audio_format = 'webm' if audio_ext == 'webm' else 'mpeg'
                     
-                    # Complete!
+                    # Complete
+                    skeleton_placeholder.empty()
                     progress_bar.progress(1.0)
-                    total_time = time_module.time() - start_time
+                    total_time = time.time() - start_time
                     step_display.markdown("✅ **Ready to play!**")
-                    detail_display.caption(f"Processed {len(text_segments)} lines in {total_time:.1f}s")
+                    detail_display.caption(f"Processed {len(text_segments)} lines in {total_time:.1f}s • Mood: {detected_mood}")
                     time_display.empty()
                     
-                    # Store data for display
+                    # Store data
                     karaoke_data = {
                         'audio_base64': audio_base64,
                         'segments': interpreted_segments,
-                        'audio_format': audio_format
+                        'audio_format': audio_format,
+                        'mood': detected_mood,
+                        'summary': song_summary,
+                        'similar_songs': similar_songs
                     }
                     st.session_state['karaoke_data'] = karaoke_data
                     
-                    # Save to cache for next time
-                    save_to_cache(st.session_state['selected_url'], "auto", karaoke_data)
+                    # Save to cache
+                    save_to_cache(
+                        st.session_state['selected_url'],
+                        "auto",
+                        karaoke_data,
+                        title=st.session_state.get('selected_title', 'Unknown')
+                    )
                     
                     st.rerun()
                     
                 except Exception as e:
+                    logger.exception("Processing failed")
                     st.error(f"Error: {e}")
                     import traceback
                     st.code(traceback.format_exc())
     
-    # Show welcome message if no song selected and no search
+    # Welcome message
     if 'selected_url' not in st.session_state:
         st.info("👆 Search for a song or paste a YouTube link — works with 99+ languages!")
         

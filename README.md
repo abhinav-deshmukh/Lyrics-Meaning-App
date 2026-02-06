@@ -14,12 +14,12 @@ An AI-powered app that reveals the true meaning behind songs in any language.
 
 ## Why this exists
 
-Songs contain metaphors, cultural references, and emotional depth that gets lost in simple translation. Surasa bridges that gap — especially for South Asian music (Hindi, Urdu, Punjabi, etc.).
+Songs contain metaphors, cultural references, and emotional depth that gets lost in simple translation. Surasa bridges that gap for music in any language — French chansons, K-pop, Latin hits, Arabic classics, Bollywood, and more.
 
 ## Tech stack
 
-- **Transcription**: OpenAI Whisper API (with timestamps)
-- **Interpretation**: GPT-4o (poetic translation + cultural context)
+- **Transcription**: OpenAI Whisper API (99+ languages, auto-detect)
+- **Interpretation**: Claude Sonnet (poetic translation + cultural context)
 - **Audio**: yt-dlp (YouTube download)
 - **UI**: Streamlit
 

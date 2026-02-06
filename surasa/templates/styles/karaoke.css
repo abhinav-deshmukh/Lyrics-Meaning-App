@@ -1,0 +1,468 @@
+/* Karaoke Player Styles - Mobile First */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
+
+/* CSS Custom Properties are set dynamically based on mood */
+
+/* Reset & Base */
+* {
+    box-sizing: border-box;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.karaoke-container {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    width: 100%;
+    margin: 0 auto;
+    background: linear-gradient(135deg, var(--bg-gradient-1) 0%, var(--bg-gradient-2) 100%);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    height: 500px;
+    position: relative;
+}
+
+/* Audio Controls - Sticky at top */
+.audio-controls {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: linear-gradient(to bottom, var(--bg-gradient-1) 0%, var(--bg-gradient-1) 80%, transparent 100%);
+    padding: var(--spacing-sm) var(--spacing-md);
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+
+.controls-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: var(--spacing-xs);
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.mood-badge {
+    font-size: 0.75rem;
+    color: var(--accent-color);
+    background: rgba(255,255,255,0.05);
+    padding: 4px 10px;
+    border-radius: 12px;
+    text-transform: capitalize;
+}
+
+.focus-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.75rem;
+    color: rgba(255,255,255,0.5);
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 8px;
+    transition: background 0.2s;
+}
+
+.focus-toggle:hover {
+    background: rgba(255,255,255,0.05);
+}
+
+.focus-toggle input {
+    accent-color: var(--accent-color);
+}
+
+/* Summary Card - separate from player */
+.summary-card {
+    background: linear-gradient(135deg, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0.03) 100%);
+    border-radius: var(--radius-md);
+    padding: var(--spacing-md);
+    margin-bottom: var(--spacing-md);
+    border: 1px solid rgba(255,255,255,0.1);
+}
+
+.summary-label {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--accent-color);
+    margin-bottom: var(--spacing-xs);
+    font-weight: 600;
+}
+
+.summary-text {
+    font-size: clamp(0.85rem, 2.5vw, 0.95rem);
+    color: rgba(255,255,255,0.85);
+    font-style: italic;
+    line-height: 1.5;
+}
+
+/* Seek Bar */
+.seek-container {
+    margin: var(--spacing-xs) 0;
+}
+
+.seek-bar {
+    width: 100%;
+    height: 6px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: rgba(255,255,255,0.15);
+    border-radius: 3px;
+    cursor: pointer;
+    outline: none;
+}
+
+.seek-bar::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 16px;
+    height: 16px;
+    background: var(--accent-color);
+    border-radius: 50%;
+    cursor: pointer;
+    box-shadow: 0 0 8px rgba(0,0,0,0.3);
+}
+
+.seek-bar::-moz-range-thumb {
+    width: 16px;
+    height: 16px;
+    background: var(--accent-color);
+    border-radius: 50%;
+    cursor: pointer;
+    border: none;
+}
+
+/* Time Display */
+.time-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: var(--spacing-xs);
+    gap: 8px;
+}
+
+.time-current, .time-duration {
+    font-size: 0.75rem;
+    font-variant-numeric: tabular-nums;
+    min-width: 40px;
+}
+
+.time-current {
+    color: var(--accent-color);
+}
+
+.time-duration {
+    color: rgba(255,255,255,0.4);
+    text-align: right;
+}
+
+/* Playback Controls */
+.playback-controls {
+    display: flex;
+    gap: 6px;
+    flex: 1;
+    justify-content: center;
+}
+
+.skip-btn {
+    background: rgba(255,255,255,0.1);
+    border: none;
+    color: white;
+    padding: 10px 14px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-size: 0.8rem;
+    font-weight: 500;
+    transition: all 0.15s ease;
+    min-height: 44px;
+    min-width: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.skip-btn.play-btn {
+    background: var(--accent-color);
+    color: #000;
+    padding: 10px 20px;
+    font-weight: 600;
+}
+
+/* Lyrics Container */
+.lyrics-container {
+    flex: 1;
+    overflow-y: auto;
+    scroll-behavior: smooth;
+    padding: var(--spacing-md);
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255,255,255,0.2) transparent;
+}
+
+.lyrics-container::-webkit-scrollbar {
+    width: 6px;
+}
+
+.lyrics-container::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.lyrics-container::-webkit-scrollbar-thumb {
+    background: rgba(255,255,255,0.2);
+    border-radius: 3px;
+}
+
+.lyrics-container::-webkit-scrollbar-thumb:hover {
+    background: rgba(255,255,255,0.3);
+}
+
+/* Lyric Segments */
+.lyric-segment {
+    padding: var(--spacing-sm) var(--spacing-md);
+    margin: var(--spacing-xs) 0;
+    border-radius: var(--radius-sm);
+    transition: all 0.3s ease;
+    opacity: 0.5;
+    border-left: 3px solid transparent;
+    cursor: pointer;
+}
+
+.lyric-segment:active {
+    transform: scale(0.98);
+}
+
+.lyric-segment.active {
+    opacity: 1;
+    background: linear-gradient(90deg, rgba(255,255,255,0.08) 0%, transparent 100%);
+    border-left: 3px solid var(--accent-color);
+    transform: translateX(4px);
+}
+
+.lyric-segment.past {
+    opacity: 0.35;
+}
+
+/* Focus Mode */
+.focus-mode .lyric-segment {
+    opacity: 0.15;
+    filter: blur(1px);
+}
+
+.focus-mode .lyric-segment.active {
+    opacity: 1;
+    filter: none;
+    background: linear-gradient(90deg, rgba(255,255,255,0.12) 0%, transparent 100%);
+    transform: translateX(8px) scale(1.02);
+    padding: var(--spacing-md);
+    box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+}
+
+.focus-mode .lyrics-container {
+    background: rgba(0,0,0,0.3);
+}
+
+/* Lyric Text Styles */
+.original {
+    font-size: clamp(1rem, 4vw, 1.3rem);
+    font-weight: 600;
+    margin-bottom: 4px;
+    color: #fff;
+    line-height: 1.3;
+}
+
+.romanized {
+    font-size: clamp(0.85rem, 3vw, 1rem);
+    color: #ffd700;
+    margin-bottom: 4px;
+    font-style: italic;
+}
+
+.translation {
+    font-size: clamp(0.9rem, 3.5vw, 1.1rem);
+    color: var(--accent-color);
+    margin-bottom: 6px;
+    font-weight: 500;
+}
+
+.meaning {
+    font-size: clamp(0.75rem, 2.5vw, 0.85rem);
+    color: rgba(255,255,255,0.6);
+    padding: var(--spacing-xs) var(--spacing-sm);
+    background: rgba(255,255,255,0.03);
+    border-radius: var(--radius-sm);
+    margin-top: var(--spacing-xs);
+    line-height: 1.5;
+}
+
+.time-badge {
+    font-size: 0.7rem;
+    color: rgba(255,255,255,0.4);
+    margin-bottom: 6px;
+    font-variant-numeric: tabular-nums;
+}
+
+/* Celebration Animation */
+.celebration-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.5s ease;
+    z-index: 100;
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0,0,0,0.7);
+}
+
+.celebration-overlay.active {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.celebration-glow {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 150%;
+    height: 150%;
+    background: radial-gradient(circle, var(--accent-color) 0%, transparent 70%);
+    opacity: 0.3;
+    animation: pulse-glow 2s ease-in-out infinite;
+}
+
+@keyframes pulse-glow {
+    0%, 100% { transform: translate(-50%, -50%) scale(1); opacity: 0.3; }
+    50% { transform: translate(-50%, -50%) scale(1.1); opacity: 0.5; }
+}
+
+.celebration-message {
+    position: relative;
+    text-align: center;
+    animation: float-in 0.5s ease-out;
+    max-height: 80%;
+    overflow-y: auto;
+    padding: 20px;
+    background: rgba(0,0,0,0.5);
+    border-radius: var(--radius-lg);
+    backdrop-filter: blur(10px);
+    pointer-events: none;  /* Only enable when overlay is active */
+    z-index: 101;
+}
+
+.celebration-overlay.active .celebration-message {
+    pointer-events: auto;
+}
+
+@keyframes float-in {
+    from { opacity: 0; transform: translateY(-20px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.sparkle {
+    position: absolute;
+    width: 10px;
+    height: 10px;
+    background: var(--accent-color);
+    border-radius: 50%;
+    animation: sparkle-float 3s ease-out forwards;
+}
+
+@keyframes sparkle-float {
+    0% { opacity: 1; transform: translateY(0) scale(1); }
+    100% { opacity: 0; transform: translateY(-100px) scale(0); }
+}
+
+/* Similar Songs */
+.similar-songs {
+    margin-top: 20px;
+    padding-top: 15px;
+    border-top: 1px solid rgba(255,255,255,0.1);
+}
+
+.similar-songs-title {
+    font-size: 0.85rem;
+    color: rgba(255,255,255,0.6);
+    margin-bottom: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.similar-song-btn {
+    display: block;
+    width: 100%;
+    text-align: left;
+    background: rgba(255,255,255,0.1);
+    border: none;
+    pointer-events: none;  /* Only enable when overlay is active */
+    color: white;
+    padding: 10px 14px;
+    margin: 6px 0;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    font-family: inherit;
+}
+
+.celebration-overlay.active .similar-song-btn {
+    pointer-events: auto;
+}
+
+.similar-song-btn:hover {
+    background: rgba(255,255,255,0.2);
+    transform: translateX(4px);
+}
+
+.similar-song-title {
+    font-size: 0.95rem;
+    font-weight: 500;
+    margin-bottom: 2px;
+}
+
+.similar-song-reason {
+    font-size: 0.75rem;
+    color: rgba(255,255,255,0.5);
+}
+
+/* Desktop Enhancements */
+@media (min-width: 640px) {
+    .karaoke-container {
+        height: 580px;
+        border-radius: var(--radius-lg);
+    }
+    
+    .audio-controls {
+        padding: var(--spacing-lg) var(--spacing-lg);
+    }
+    
+    .lyrics-container {
+        padding: var(--spacing-lg);
+    }
+    
+    .skip-btn:hover {
+        background: rgba(255,255,255,0.2);
+        transform: translateY(-1px);
+    }
+    
+    .skip-btn.play-btn:hover {
+        filter: brightness(1.1);
+    }
+    
+    .lyric-segment:hover {
+        background: rgba(255,255,255,0.05);
+    }
+    
+    .focus-toggle:hover {
+        background: rgba(255,255,255,0.08);
+    }
+}
+
+@media (min-width: 1024px) {
+    .karaoke-container {
+        height: 620px;
+    }
+}
