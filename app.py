@@ -55,6 +55,40 @@ load_dotenv()
 
 
 # =============================================================================
+# Rate Limiting
+# =============================================================================
+
+DAILY_LIMIT = 10  # Max songs per session per day
+
+def check_rate_limit() -> tuple[bool, int]:
+    """
+    Check if user has exceeded daily rate limit.
+    Returns (is_allowed, remaining_count).
+    """
+    from datetime import date
+    
+    today = date.today().isoformat()
+    
+    # Initialize rate limit tracking
+    if 'rate_limit_date' not in st.session_state:
+        st.session_state['rate_limit_date'] = today
+        st.session_state['rate_limit_count'] = 0
+    
+    # Reset count if it's a new day
+    if st.session_state['rate_limit_date'] != today:
+        st.session_state['rate_limit_date'] = today
+        st.session_state['rate_limit_count'] = 0
+    
+    remaining = DAILY_LIMIT - st.session_state['rate_limit_count']
+    return remaining > 0, remaining
+
+
+def increment_rate_limit():
+    """Increment the rate limit counter after processing a song."""
+    st.session_state['rate_limit_count'] = st.session_state.get('rate_limit_count', 0) + 1
+
+
+# =============================================================================
 # Helper Functions
 # =============================================================================
 
@@ -113,6 +147,11 @@ if similar_search_query:
 
 st.title("🎶 Surasa")
 st.markdown("*From melody to meaning, in any language*")
+
+# Show rate limit status (subtle)
+_, remaining = check_rate_limit()
+if remaining <= 3:
+    st.caption(f"⚡ {remaining} songs remaining today")
 
 
 # =============================================================================
@@ -358,6 +397,14 @@ else:
             st.session_state['karaoke_data'] = cached
             st.rerun()
         
+        # Check rate limit (cached songs don't count)
+        is_allowed, remaining = check_rate_limit()
+        if not is_allowed:
+            st.error("⏳ **Daily limit reached!** You've processed 10 songs today. Come back tomorrow!")
+            st.info("💡 Tip: Songs you've already processed are cached and don't count toward the limit.")
+            del st.session_state['selected_url']
+            st.stop()
+        
         if st.session_state.get('auto_process'):
             del st.session_state['auto_process']
             
@@ -484,6 +531,9 @@ else:
                         karaoke_data,
                         title=st.session_state.get('selected_title', 'Unknown')
                     )
+                    
+                    # Increment rate limit counter
+                    increment_rate_limit()
                     
                     st.rerun()
                     
