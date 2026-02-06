@@ -28,28 +28,6 @@ def _load_css() -> str:
         """
 
 
-def _build_similar_songs_html(similar_songs: List[Dict[str, str]]) -> str:
-    """Build HTML for similar songs section."""
-    if not similar_songs:
-        return ""
-    
-    songs_btns = ""
-    for song in similar_songs[:4]:
-        title = html.escape(song.get('title', ''))
-        reason = html.escape(song.get('reason', ''))
-        songs_btns += f'''
-        <button class="similar-song-btn" data-search="{title}">
-            <div class="similar-song-title">{title}</div>
-            <div class="similar-song-reason">{reason}</div>
-        </button>'''
-    
-    return f'''
-    <div class="similar-songs">
-        <div class="similar-songs-title">🎵 You might also like</div>
-        {songs_btns}
-    </div>'''
-
-
 def _get_karaoke_javascript() -> str:
     """Return the karaoke player JavaScript."""
     return """
@@ -220,59 +198,52 @@ def _get_karaoke_javascript() -> str:
             createSparkles();
             celebrationOverlay.classList.add('active');
             
-            const hasSimilarSongs = celebrationOverlay.querySelector('.similar-songs');
-            if (!hasSimilarSongs) {
-                setTimeout(() => {
-                    celebrationOverlay.classList.remove('active');
-                    celebrationOverlay.querySelectorAll('.sparkle').forEach(s => s.remove());
-                }, 4000);
-            }
-        }
-        
-        // Dismiss celebration
-        celebrationOverlay.addEventListener('click', (e) => {
-            if (e.target === celebrationOverlay || e.target.classList.contains('celebration-glow')) {
+            // Auto-close after 4 seconds
+            setTimeout(() => {
                 celebrationOverlay.classList.remove('active');
                 celebrationOverlay.querySelectorAll('.sparkle').forEach(s => s.remove());
-            }
-        });
+            }, 4000);
+        }
         
-        // Similar song clicks
-        document.querySelectorAll('.similar-song-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                const searchText = btn.dataset.search;
-                btn.innerHTML = '<div class="similar-song-title">🔍 Searching...</div><div class="similar-song-reason">' + searchText + '</div>';
-                
-                let baseUrl;
-                try {
-                    baseUrl = window.top.location.origin + window.top.location.pathname;
-                } catch(e) {
-                    baseUrl = window.location.origin;
-                }
-                const redirectUrl = baseUrl + '?similar_search=' + encodeURIComponent(searchText);
-                
-                try {
-                    window.top.location.replace(redirectUrl);
-                } catch(e1) {
-                    try {
-                        window.parent.location.replace(redirectUrl);
-                    } catch(e2) {
-                        try {
-                            window.open(redirectUrl, '_top');
-                        } catch(e3) {
-                            btn.innerHTML = '<div class="similar-song-title">Click "' + searchText + '"</div><div class="similar-song-reason">in Similar Songs below ↓</div>';
-                        }
-                    }
-                }
-            });
+        // Dismiss celebration on click
+        celebrationOverlay.addEventListener('click', () => {
+            celebrationOverlay.classList.remove('active');
+            celebrationOverlay.querySelectorAll('.sparkle').forEach(s => s.remove());
         });
         
         audio.addEventListener('ended', () => {
             updatePlayPauseBtn();
             showCelebration();
         });
+        
+        // Fullscreen functionality
+        const fullscreenBtn = document.getElementById('fullscreenBtn');
+        const playerWrapper = document.getElementById('playerWrapper');
+        
+        function updateFullscreenBtn() {
+            const isFullscreen = document.fullscreenElement || document.webkitFullscreenElement;
+            fullscreenBtn.textContent = isFullscreen ? '⛶' : '⛶';
+            fullscreenBtn.title = isFullscreen ? 'Exit Fullscreen' : 'Fullscreen';
+        }
+        
+        fullscreenBtn.addEventListener('click', () => {
+            if (document.fullscreenElement || document.webkitFullscreenElement) {
+                if (document.exitFullscreen) {
+                    document.exitFullscreen();
+                } else if (document.webkitExitFullscreen) {
+                    document.webkitExitFullscreen();
+                }
+            } else {
+                if (playerWrapper.requestFullscreen) {
+                    playerWrapper.requestFullscreen();
+                } else if (playerWrapper.webkitRequestFullscreen) {
+                    playerWrapper.webkitRequestFullscreen();
+                }
+            }
+        });
+        
+        document.addEventListener('fullscreenchange', updateFullscreenBtn);
+        document.addEventListener('webkitfullscreenchange', updateFullscreenBtn);
     </script>
     """
 
@@ -312,7 +283,6 @@ def render_karaoke_player(
     summary_escaped = html.escape(summary) if summary else ""
     
     # Build components
-    similar_songs_html = _build_similar_songs_html(similar_songs)
     segments_json = json.dumps(segments)
     
     # Get CSS (with CSS variables set)
@@ -338,31 +308,10 @@ def render_karaoke_player(
         {base_css}
     </style>
     
-    <!-- Song Summary Card (separate from player) -->
-    {f'''<div class="summary-card">
-        <div class="summary-label">About this song</div>
-        <div class="summary-text">"{summary_escaped}"</div>
-    </div>''' if summary_escaped else ''}
-    
-    <div class="karaoke-container" id="karaokeContainer" style="position: relative;">
-        <!-- Celebration overlay -->
-        <div class="celebration-overlay" id="celebrationOverlay">
-            <div class="celebration-glow"></div>
-            <div class="celebration-message">
-                {similar_songs_html}
-                <div style="font-size: 0.75rem; color: rgba(255,255,255,0.4); margin-top: 15px;">Click outside to close</div>
-            </div>
-        </div>
-        
-        <!-- Player Controls Card -->
-        <div class="audio-controls">
-            <div class="controls-header">
-                <span class="mood-badge">🎭 {mood}</span>
-                <label class="focus-toggle">
-                    <input type="checkbox" id="focusToggle"> Focus mode
-                </label>
-            </div>
-            
+    <!-- Fullscreen wrapper -->
+    <div class="player-wrapper" id="playerWrapper">
+        <!-- Player Controls (progress bar at top) -->
+        <div class="audio-controls-standalone">
             <audio id="audioPlayer" style="display:none;">
                 <source src="data:audio/{audio_format};base64,{audio_base64}" type="audio/{audio_format}">
             </audio>
@@ -375,14 +324,36 @@ def render_karaoke_player(
                         <button class="skip-btn" id="skipBack">-10s</button>
                         <button class="skip-btn play-btn" id="playPauseBtn">▶ Play</button>
                         <button class="skip-btn" id="skipForward">+10s</button>
+                        <button class="skip-btn fullscreen-btn" id="fullscreenBtn" title="Fullscreen">⛶</button>
                     </div>
                     <span class="time-duration" id="duration">0:00</span>
                 </div>
             </div>
         </div>
         
-        <!-- Lyrics Card -->
-        <div class="lyrics-container" id="lyricsContainer"></div>
+        <!-- Song Summary Card -->
+        {f'''<div class="summary-card">
+            <div class="summary-label">About this song</div>
+            <div class="summary-text">"{summary_escaped}"</div>
+        </div>''' if summary_escaped else ''}
+        
+        <div class="karaoke-container" id="karaokeContainer" style="position: relative;">
+            <!-- Celebration overlay (visual only, no text) -->
+            <div class="celebration-overlay" id="celebrationOverlay">
+                <div class="celebration-glow"></div>
+            </div>
+            
+            <!-- Lyrics header -->
+            <div class="lyrics-header">
+                <span class="mood-badge">🎭 {mood}</span>
+                <label class="focus-toggle">
+                    <input type="checkbox" id="focusToggle"> Focus mode
+                </label>
+            </div>
+            
+            <!-- Lyrics Card -->
+            <div class="lyrics-container" id="lyricsContainer"></div>
+        </div>
     </div>
     
     {js}
