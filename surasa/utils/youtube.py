@@ -1,6 +1,7 @@
 """
 YouTube-related utilities.
 Handles video search, metadata extraction, and audio download.
+Uses Cobalt API when COBALT_API_URL is set (e.g. on Railway); otherwise yt-dlp.
 """
 
 import json
@@ -9,6 +10,7 @@ import os
 import subprocess
 import urllib.parse
 import urllib.request
+import urllib.error
 from typing import List, Optional, Dict, Any
 
 from surasa.config.settings import settings
@@ -213,9 +215,64 @@ def get_video_duration(url: str) -> int:
     return 0
 
 
+def _download_audio_via_cobalt(url: str, output_dir: str, base_url: str) -> Optional[str]:
+    """
+    Try to get audio via Cobalt API (POST then GET download URL).
+    Returns path to saved file, or None on any failure.
+    """
+    try:
+        api_url = f"{base_url}/" if not base_url.endswith("/") else base_url
+        req = urllib.request.Request(
+            api_url,
+            data=json.dumps({
+                "url": url,
+                "downloadMode": "audio",
+                "audioFormat": "mp3",
+                "audioBitrate": "128",
+                "filenameStyle": "basic",
+            }).encode("utf-8"),
+            method="POST",
+            headers={"Accept": "application/json", "Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        status = data.get("status")
+        if status not in ("tunnel", "redirect"):
+            if status == "error":
+                logger.warning("Cobalt API error: %s", data.get("error", data))
+            else:
+                logger.warning("Cobalt returned status: %s", status)
+            return None
+        download_url = data.get("url")
+        if not download_url:
+            logger.warning("Cobalt response missing url")
+            return None
+        # Cobalt may return a path like /tunnel/xxx; make absolute if relative
+        if download_url.startswith("/"):
+            parsed = urllib.parse.urlparse(base_url)
+            download_url = f"{parsed.scheme}://{parsed.netloc}{download_url}"
+        out_path = os.path.join(output_dir, "audio.mp3")
+        req = urllib.request.Request(download_url, headers={"User-Agent": "Surasa/1.0"})
+        with urllib.request.urlopen(req, timeout=settings.audio.download_timeout) as resp:
+            with open(out_path, "wb") as f:
+                f.write(resp.read())
+        return out_path
+    except urllib.error.HTTPError as e:
+        logger.warning("Cobalt HTTP error %s: %s", e.code, e.reason)
+        return None
+    except urllib.error.URLError as e:
+        logger.warning("Cobalt URL error: %s", e.reason)
+        return None
+    except (json.JSONDecodeError, KeyError, OSError) as e:
+        logger.warning("Cobalt download failed: %s", e)
+        return None
+
+
 def download_audio(url: str, output_dir: str) -> str:
     """
     Download audio from YouTube URL.
+    Uses Cobalt API when COBALT_API_URL is set (avoids yt-dlp JS/bot issues on Railway);
+    otherwise falls back to yt-dlp.
     
     Args:
         url: YouTube video URL.
@@ -227,8 +284,14 @@ def download_audio(url: str, output_dir: str) -> str:
     Raises:
         Exception: If download fails.
     """
-    output_template = os.path.join(output_dir, "audio.%(ext)s")
+    base_url = (settings.audio.cobalt_api_url or "").strip()
+    if base_url:
+        path = _download_audio_via_cobalt(url, output_dir, base_url)
+        if path:
+            return path
+        logger.info("Cobalt failed, falling back to yt-dlp")
     
+    output_template = os.path.join(output_dir, "audio.%(ext)s")
     result = subprocess.run(
         [
             "yt-dlp", 

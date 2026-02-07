@@ -1,0 +1,13 @@
+.env
+.venv
+venv
+__pycache__
+*.pyc
+.git
+.gitignore
+.cache
+test_audio
+.vscode
+.idea
+*.md
+!README.md
