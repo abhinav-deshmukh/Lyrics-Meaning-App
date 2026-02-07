@@ -1,7 +1,6 @@
 """
 YouTube-related utilities.
 Handles video search, metadata extraction, and audio download.
-Uses Cobalt API when configured (works on Streamlit Cloud); falls back to yt-dlp locally.
 """
 
 import json
@@ -15,11 +14,6 @@ from typing import List, Optional, Dict, Any
 from surasa.config.settings import settings
 
 logger = logging.getLogger(__name__)
-
-# User-Agent for Cobalt API (browser-like to avoid bot blocking on public instances)
-_REQUEST_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; rv:109.0) Gecko/20100101 Firefox/115.0"
-}
 
 
 def extract_video_id(url: str) -> Optional[str]:
@@ -219,107 +213,9 @@ def get_video_duration(url: str) -> int:
     return 0
 
 
-def _download_audio_via_cobalt(youtube_url: str, output_dir: str) -> Optional[str]:
-    """
-    Download audio using Cobalt API (works on Streamlit Cloud).
-    
-    Returns:
-        Path to the downloaded file, or None if Cobalt is not configured or request fails.
-    """
-    base = (settings.audio.cobalt_api_url or "").strip()
-    if not base:
-        return None
-    
-    api_url = base.rstrip("/") + "/"
-    
-    body = {
-        "url": youtube_url,
-        "downloadMode": "audio",
-        "audioFormat": "mp3",
-        "filenameStyle": "basic",
-    }
-    
-    try:
-        req = urllib.request.Request(
-            api_url,
-            data=json.dumps(body).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                **_REQUEST_HEADERS,
-            },
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        
-        status = data.get("status")
-        if status not in ("tunnel", "redirect"):
-            if status == "error":
-                err = data.get("error", {})
-                logger.warning(f"Cobalt API error: {err.get('code', 'unknown')}")
-            return None
-        
-        audio_url = data.get("url")
-        filename = data.get("filename", "audio.mp3")
-        if not audio_url:
-            return None
-        
-        # Sanitize filename for local save
-        safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in filename)
-        if not safe_name.lower().endswith(".mp3"):
-            safe_name = "audio.mp3"
-        output_path = os.path.join(output_dir, safe_name)
-        
-        download_req = urllib.request.Request(audio_url, headers=_REQUEST_HEADERS)
-        with urllib.request.urlopen(download_req, timeout=settings.audio.download_timeout) as resp:
-            with open(output_path, "wb") as f:
-                f.write(resp.read())
-        
-        logger.info(f"Cobalt: saved audio to {output_path}")
-        return output_path
-        
-    except urllib.error.HTTPError as e:
-        logger.warning(f"Cobalt API HTTP error: {e.code} {e.reason}")
-        return None
-    except urllib.error.URLError as e:
-        logger.warning(f"Cobalt API URL error: {e.reason}")
-        return None
-    except (json.JSONDecodeError, KeyError, OSError) as e:
-        logger.warning(f"Cobalt API error: {e}")
-        return None
-
-
-def _download_audio_via_ytdlp(url: str, output_dir: str) -> str:
-    """Download audio using yt-dlp (for local use). Raises on failure."""
-    output_template = os.path.join(output_dir, "audio.%(ext)s")
-    
-    result = subprocess.run(
-        [
-            "yt-dlp",
-            "-x",
-            "--audio-format", "mp3",
-            "--audio-quality", settings.audio.audio_quality,
-            "-o", output_template,
-            "--no-playlist",
-            url,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=settings.audio.download_timeout,
-    )
-    
-    for f in os.listdir(output_dir):
-        if f.startswith("audio."):
-            return os.path.join(output_dir, f)
-    
-    raise Exception(f"Download failed: {result.stderr}")
-
-
 def download_audio(url: str, output_dir: str) -> str:
     """
     Download audio from YouTube URL.
-    Tries Cobalt API first (works on Streamlit Cloud), then yt-dlp.
     
     Args:
         url: YouTube video URL.
@@ -329,18 +225,31 @@ def download_audio(url: str, output_dir: str) -> str:
         Path to the downloaded audio file.
         
     Raises:
-        Exception: If both methods fail.
+        Exception: If download fails.
     """
-    path = _download_audio_via_cobalt(url, output_dir)
-    if path:
-        return path
+    output_template = os.path.join(output_dir, "audio.%(ext)s")
     
-    try:
-        return _download_audio_via_ytdlp(url, output_dir)
-    except Exception as e:
-        raise Exception(
-            f"Download failed: Cobalt API unavailable and yt-dlp failed. {e}"
-        )
+    result = subprocess.run(
+        [
+            "yt-dlp", 
+            "-x", 
+            "--audio-format", "mp3", 
+            "--audio-quality", settings.audio.audio_quality,
+            "-o", output_template, 
+            "--no-playlist", 
+            url
+        ],
+        capture_output=True, 
+        text=True, 
+        timeout=settings.audio.download_timeout
+    )
+    
+    # Find the downloaded file
+    for f in os.listdir(output_dir):
+        if f.startswith("audio."):
+            return os.path.join(output_dir, f)
+    
+    raise Exception(f"Download failed: {result.stderr}")
 
 
 def get_youtube_suggestions(query: str) -> List[str]:

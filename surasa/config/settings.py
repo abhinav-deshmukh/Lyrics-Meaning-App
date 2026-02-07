@@ -25,10 +25,6 @@ class AudioSettings:
     audio_quality: str = "9"  # yt-dlp quality (9 = smallest)
     download_timeout: int = 120
     supported_formats: tuple = ("mp3", "webm", "m4a")
-    # Cobalt API base URL for YouTube audio (works on Streamlit Cloud). Set empty to use yt-dlp only.
-    cobalt_api_url: str = field(
-        default_factory=lambda: os.environ.get("COBALT_API_URL", "https://api.cobalt.tools")
-    )
 
 
 @dataclass
