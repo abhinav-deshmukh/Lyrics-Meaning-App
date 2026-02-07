@@ -7,6 +7,7 @@ Uses Cobalt API when COBALT_API_URL is set (e.g. on Railway); otherwise yt-dlp.
 import json
 import logging
 import os
+import shutil
 import subprocess
 import urllib.parse
 import urllib.request
@@ -16,6 +17,12 @@ from typing import List, Optional, Dict, Any
 from surasa.config.settings import settings
 
 logger = logging.getLogger(__name__)
+
+# When Node is in PATH (e.g. Dockerfile on Railway), tell yt-dlp to use it for YouTube
+def _yt_dlp_js_args() -> List[str]:
+    if shutil.which("node"):
+        return ["--js-runtimes", "node"]
+    return []
 
 
 def extract_video_id(url: str) -> Optional[str]:
@@ -140,7 +147,7 @@ def search_youtube(query: str, max_results: int = None) -> List[Dict[str, Any]]:
     try:
         # Search for more results to filter and rank
         result = subprocess.run(
-            ["yt-dlp", f"ytsearch10:{query}", "--dump-json", "--flat-playlist"],
+            ["yt-dlp", f"ytsearch10:{query}", "--dump-json", "--flat-playlist"] + _yt_dlp_js_args(),
             capture_output=True, 
             text=True, 
             timeout=settings.api.request_timeout
@@ -197,7 +204,7 @@ def get_video_duration(url: str) -> int:
     """
     try:
         result = subprocess.run(
-            ["yt-dlp", "--dump-json", "--no-download", url],
+            ["yt-dlp", "--dump-json", "--no-download", url] + _yt_dlp_js_args(),
             capture_output=True, 
             text=True, 
             timeout=15
@@ -299,9 +306,10 @@ def download_audio(url: str, output_dir: str) -> str:
             "--audio-format", "mp3", 
             "--audio-quality", settings.audio.audio_quality,
             "-o", output_template, 
-            "--no-playlist", 
-            url
-        ],
+            "--no-playlist",
+        ]
+        + _yt_dlp_js_args()
+        + [url],
         capture_output=True, 
         text=True, 
         timeout=settings.audio.download_timeout
