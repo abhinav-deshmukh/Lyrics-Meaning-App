@@ -28,6 +28,8 @@ class AudioSettings:
     # Optional Cobalt API base URL for YouTube audio (avoids yt-dlp JS/bot issues on Railway).
     # Set COBALT_API_URL in env if you run your own Cobalt instance (see https://github.com/imputnet/cobalt).
     cobalt_api_url: str = field(default_factory=lambda: os.environ.get("COBALT_API_URL", "").rstrip("/"))
+    # Optional API key if your Cobalt instance requires auth (Authorization: Api-Key <key>).
+    cobalt_api_key: str = field(default_factory=lambda: os.environ.get("COBALT_API_KEY", "").strip())
 
 
 @dataclass

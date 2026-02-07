@@ -4,15 +4,17 @@ Handles video search, metadata extraction, and audio download.
 Uses Cobalt API when COBALT_API_URL is set (e.g. on Railway); otherwise yt-dlp.
 """
 
+import base64
 import json
 import logging
 import os
 import shutil
 import subprocess
+import tempfile
 import urllib.parse
 import urllib.request
 import urllib.error
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 
 from surasa.config.settings import settings
 
@@ -23,6 +25,25 @@ def _yt_dlp_js_args() -> List[str]:
     if shutil.which("node"):
         return ["--js-runtimes", "node"]
     return []
+
+
+def _get_cookies_args() -> Tuple[List[str], Optional[str]]:
+    """
+    If YT_DLP_COOKIES_BASE64 is set, decode to a temp Netscape cookies file and return
+    (["--cookies", path], path) so caller can delete the file after use. Else return ([], None).
+    """
+    raw = os.environ.get("YT_DLP_COOKIES_BASE64", "").strip()
+    if not raw:
+        return ([], None)
+    try:
+        data = base64.b64decode(raw)
+        f = tempfile.NamedTemporaryFile(mode="wb", delete=False, suffix=".cookies.txt")
+        f.write(data)
+        f.close()
+        return (["--cookies", f.name], f.name)
+    except Exception as e:
+        logger.warning("Failed to use YT_DLP_COOKIES_BASE64: %s", e)
+        return ([], None)
 
 
 def extract_video_id(url: str) -> Optional[str]:
@@ -229,6 +250,10 @@ def _download_audio_via_cobalt(url: str, output_dir: str, base_url: str) -> Opti
     """
     try:
         api_url = f"{base_url}/" if not base_url.endswith("/") else base_url
+        headers = {"Accept": "application/json", "Content-Type": "application/json"}
+        api_key = (settings.audio.cobalt_api_key or "").strip()
+        if api_key:
+            headers["Authorization"] = f"Api-Key {api_key}"
         req = urllib.request.Request(
             api_url,
             data=json.dumps({
@@ -239,7 +264,7 @@ def _download_audio_via_cobalt(url: str, output_dir: str, base_url: str) -> Opti
                 "filenameStyle": "basic",
             }).encode("utf-8"),
             method="POST",
-            headers={"Accept": "application/json", "Content-Type": "application/json"},
+            headers=headers,
         )
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read().decode("utf-8"))
@@ -298,29 +323,43 @@ def download_audio(url: str, output_dir: str) -> str:
             return path
         logger.info("Cobalt failed, falling back to yt-dlp")
     
-    output_template = os.path.join(output_dir, "audio.%(ext)s")
-    result = subprocess.run(
-        [
-            "yt-dlp", 
-            "-x", 
-            "--audio-format", "mp3", 
-            "--audio-quality", settings.audio.audio_quality,
-            "-o", output_template, 
-            "--no-playlist",
-        ]
-        + _yt_dlp_js_args()
-        + [url],
-        capture_output=True, 
-        text=True, 
-        timeout=settings.audio.download_timeout
-    )
-    
-    # Find the downloaded file
-    for f in os.listdir(output_dir):
-        if f.startswith("audio."):
-            return os.path.join(output_dir, f)
-    
-    raise Exception(f"Download failed: {result.stderr}")
+    cookies_args, cookies_path = _get_cookies_args()
+    try:
+        output_template = os.path.join(output_dir, "audio.%(ext)s")
+        result = subprocess.run(
+            [
+                "yt-dlp",
+                "-x",
+                "--audio-format", "mp3",
+                "--audio-quality", settings.audio.audio_quality,
+                "-o", output_template,
+                "--no-playlist",
+            ]
+            + _yt_dlp_js_args()
+            + cookies_args
+            + [url],
+            capture_output=True,
+            text=True,
+            timeout=settings.audio.download_timeout
+        )
+        # Find the downloaded file
+        for f in os.listdir(output_dir):
+            if f.startswith("audio."):
+                return os.path.join(output_dir, f)
+        stderr = result.stderr or ""
+        if "Sign in to confirm you're not a bot" in stderr or "confirm you're not a bot" in stderr:
+            raise Exception(
+                "YouTube is blocking this server. Options: (1) Set COBALT_API_URL to your own Cobalt instance, "
+                "or (2) Add YT_DLP_COOKIES_BASE64 in Railway Variables (base64-encoded Netscape cookies from your browser). "
+                "See https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp"
+            )
+        raise Exception(f"Download failed: {stderr}")
+    finally:
+        if cookies_path and os.path.exists(cookies_path):
+            try:
+                os.unlink(cookies_path)
+            except OSError:
+                pass
 
 
 def get_youtube_suggestions(query: str) -> List[str]:
