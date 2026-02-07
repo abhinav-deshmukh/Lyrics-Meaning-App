@@ -3,6 +3,7 @@ Audio transcription service using OpenAI Whisper.
 """
 
 import logging
+import os
 import time
 from typing import List, Dict, Any, Optional
 
@@ -30,7 +31,13 @@ def transcribe_with_timestamps(
     Raises:
         Exception: If transcription fails after retries.
     """
-    client = OpenAI()
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        raise ValueError(
+            "OPENAI_API_KEY is not set. Add it in Railway: Project → your service → Variables → "
+            "OPENAI_API_KEY = your_key. Locally, set it in a .env file."
+        )
+    client = OpenAI(api_key=api_key)
     max_retries = settings.api.max_retries
     
     for attempt in range(max_retries):
