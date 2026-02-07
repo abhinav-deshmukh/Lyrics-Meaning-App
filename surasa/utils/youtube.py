@@ -318,10 +318,15 @@ def download_audio(url: str, output_dir: str) -> str:
     """
     base_url = (settings.audio.cobalt_api_url or "").strip()
     if base_url:
+        if not base_url.startswith(("http://", "https://")):
+            base_url = "https://" + base_url
         path = _download_audio_via_cobalt(url, output_dir, base_url)
         if path:
             return path
-        logger.info("Cobalt failed, falling back to yt-dlp")
+        logger.warning("Cobalt failed, falling back to yt-dlp")
+        cobalt_was_tried = True
+    else:
+        cobalt_was_tried = False
     
     cookies_args, cookies_path = _get_cookies_args()
     try:
@@ -348,10 +353,15 @@ def download_audio(url: str, output_dir: str) -> str:
                 return os.path.join(output_dir, f)
         stderr = result.stderr or ""
         if "Sign in to confirm you're not a bot" in stderr or "confirm you're not a bot" in stderr:
+            if cobalt_was_tried:
+                raise Exception(
+                    "Cobalt was tried but failed (check COBALT_API_URL and COBALT_API_KEY in Railway Variables). "
+                    "Then yt-dlp was blocked by YouTube. Fix Cobalt (URL must be https://your-cobalt.up.railway.app, "
+                    "and add COBALT_API_KEY if your Cobalt instance requires it) and redeploy."
+                )
             raise Exception(
-                "YouTube is blocking this server. Options: (1) Set COBALT_API_URL to your own Cobalt instance, "
-                "or (2) Add YT_DLP_COOKIES_BASE64 in Railway Variables (base64-encoded Netscape cookies from your browser). "
-                "See https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp"
+                "YouTube is blocking this server. Set COBALT_API_URL to your Cobalt instance (e.g. https://cobalt-production-xxx.up.railway.app) "
+                "in Railway Variables, or add YT_DLP_COOKIES_BASE64. See docs/cobalt-setup.md."
             )
         raise Exception(f"Download failed: {stderr}")
     finally:
