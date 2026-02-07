@@ -222,7 +222,7 @@ def _get_karaoke_javascript() -> str:
         
         function updateFullscreenBtn() {
             const isFullscreen = document.fullscreenElement || document.webkitFullscreenElement;
-            fullscreenBtn.textContent = isFullscreen ? '⛶' : '⛶';
+            fullscreenBtn.textContent = isFullscreen ? '✕' : '⛶';
             fullscreenBtn.title = isFullscreen ? 'Exit Fullscreen' : 'Fullscreen';
         }
         
