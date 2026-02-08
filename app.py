@@ -92,6 +92,33 @@ def increment_rate_limit():
 # Helper Functions
 # =============================================================================
 
+def estimate_transcription_and_interpretation_sec(audio_duration_sec: float) -> tuple[float, float]:
+    """
+    Estimate time for Whisper transcription + Claude interpretation from audio duration.
+    Returns (low_sec, high_sec) for a range (e.g. "about 1–2 min").
+    """
+    mins = audio_duration_sec / 60.0
+    # Whisper: ~15–30 sec per minute of audio; interpretation: ~5–15 sec per minute (by line count proxy)
+    low_per_min = 20
+    high_per_min = 45
+    low_sec = max(15, mins * low_per_min)
+    high_sec = max(30, mins * high_per_min)
+    return (low_sec, high_sec)
+
+
+def format_time_estimate(low_sec: float, high_sec: float) -> str:
+    """Format estimate as user-facing string, e.g. 'about 30–90 sec' or 'about 1–2 min'."""
+    if high_sec < 60:
+        return f"about {int(low_sec)}–{int(high_sec)} sec"
+    low_min = low_sec / 60
+    high_min = high_sec / 60
+    if low_min < 1 and high_min < 1:
+        return f"about {int(low_sec)}–{int(high_sec)} sec"
+    if low_min < 1:
+        return f"about 30 sec–{int(round(high_min))} min"
+    return f"about {int(round(low_min))}–{int(round(high_min))} min"
+
+
 def get_audio_base64(audio_path: str) -> str:
     """Convert audio file to base64 for embedding."""
     with open(audio_path, "rb") as f:
@@ -128,6 +155,19 @@ st.set_page_config(
     layout="wide"
 )
 
+# When song ends in player, it redirects here with ?new_search=1 → show search + suggested songs
+if st.query_params.get('new_search'):
+    st.query_params.clear()
+    # Preserve similar songs and title so we can show "You might also like" on the search view
+    if 'karaoke_data' in st.session_state:
+        data = st.session_state['karaoke_data']
+        st.session_state['post_play_similar_songs'] = data.get('similar_songs', [])
+        st.session_state['post_play_title'] = st.session_state.get('selected_title', '')
+    for key in ['selected_url', 'selected_title', 'karaoke_data']:
+        if key in st.session_state:
+            del st.session_state[key]
+    st.rerun()
+
 # Handle similar song search from celebration overlay
 similar_search_query = st.query_params.get('similar_search', None)
 if similar_search_query:
@@ -155,23 +195,181 @@ if remaining <= 3:
 
 
 # =============================================================================
-# Main Content
+# Main Content – search bar always at top, then player or pipeline below
 # =============================================================================
 
 has_karaoke = 'karaoke_data' in st.session_state
 
+# When returning after song end, scroll to top so the search bar is visible
+if st.session_state.get('post_play_similar_songs') or st.session_state.get('post_play_title'):
+    st.components.v1.html(
+        "<script>try { window.parent.scrollTo(0,0); } catch(e) { window.scrollTo(0,0); }</script>",
+        height=0,
+    )
+# Sticky header + search tabs so they stay visible when scrolling
+st.markdown("""
+<style>
+/* Tighter gap between tagline and search tabs */
+.block-container > div:nth-child(1),
+.block-container > div:nth-child(2),
+.block-container > div:nth-child(3) { padding-bottom: 0.1rem !important; margin-bottom: 0 !important; }
+.block-container hr { margin-top: 0.25rem !important; margin-bottom: 0.25rem !important; }
+.block-container > div:nth-child(1) { position: sticky !important; top: 0 !important; z-index: 999 !important; background: var(--background-color) !important; }
+.block-container > div:nth-child(2) { position: sticky !important; top: 3.5rem !important; z-index: 999 !important; background: var(--background-color) !important; padding-bottom: 0.25rem !important; }
+.block-container > div:nth-child(3) { position: sticky !important; top: 5.5rem !important; z-index: 999 !important; background: var(--background-color) !important; padding-bottom: 0.25rem !important; }
+.block-container > div:nth-child(4) { position: sticky !important; top: 7rem !important; z-index: 999 !important; background: var(--background-color) !important; padding-bottom: 0.25rem !important; }
+.block-container > div:nth-child(5) { position: sticky !important; top: 8.5rem !important; z-index: 999 !important; background: var(--background-color) !important; padding-bottom: 0.25rem !important; }
+.block-container > div:nth-child(6) { position: sticky !important; top: 10rem !important; z-index: 999 !important; background: var(--background-color) !important; padding-bottom: 0.25rem !important; }
+.block-container > div:nth-child(7) { position: sticky !important; top: 11.5rem !important; z-index: 999 !important; background: var(--background-color) !important; padding-bottom: 0.25rem !important; }
+.block-container > div:nth-child(8) { position: sticky !important; top: 13rem !important; z-index: 999 !important; background: var(--background-color) !important; padding-bottom: 0.25rem !important; }
+.block-container > div:nth-child(9) { position: sticky !important; top: 14.5rem !important; z-index: 999 !important; background: var(--background-color) !important; padding-bottom: 0.25rem !important; }
+.block-container > div:nth-child(10) { position: sticky !important; top: 16rem !important; z-index: 999 !important; background: var(--background-color) !important; padding-bottom: 0.25rem !important; }
+</style>
+""", unsafe_allow_html=True)
+
+st.divider()
+
+# Processing bar MUST be above "Select a song" – show it here, before the tabs
+processing_container = st.container()
+progress_bar = step_display = detail_display = time_display = None
+if (
+    'selected_url' in st.session_state
+    and 'karaoke_data' not in st.session_state
+    and st.session_state.get('auto_process')
+):
+    with processing_container:
+        st.info(f"🎵 Processing: **{st.session_state.get('selected_title', 'Song')}**")
+        progress_bar = st.progress(0)
+        step_display = st.empty()
+        detail_display = st.empty()
+        time_display = st.empty()
+elif 'selected_url' in st.session_state and 'karaoke_data' not in st.session_state:
+    with processing_container:
+        st.info(f"🎵 Processing: **{st.session_state.get('selected_title', 'Song')}**")
+
+# Search bar + tabs (Select a song appears inside Search tab, below this)
+tab1, tab2, tab3, tab4 = st.tabs(["🔍 Search", "🔗 YouTube Link", "🌍 Browse by Language", "📚 History"])
+
+with tab1:
+    search_query = st_searchbox(
+        get_youtube_suggestions,
+        key="song_search",
+        placeholder="Search any song (e.g., La Vie en Rose, Despacito, Gangnam Style...)",
+        clear_on_submit=False,
+    )
+    if search_query and 'selected_url' not in st.session_state:
+        with st.spinner("Finding songs..."):
+            results = search_youtube(search_query)
+        if results:
+            st.markdown("### Select a song:")
+            for i, result in enumerate(results):
+                col_thumb, col_info = st.columns([1, 6])
+                with col_thumb:
+                    if result.get('thumbnail'):
+                        st.image(result['thumbnail'], width=settings.ui.thumbnail_width)
+                with col_info:
+                    if st.button(
+                        f"▶️  **{result['title']}**\n\n{result['channel']} • {result['duration']}",
+                        key=f"select_{i}",
+                        use_container_width=True
+                    ):
+                        st.session_state['selected_url'] = result['url']
+                        st.session_state['selected_title'] = result['title']
+                        st.session_state['auto_process'] = True
+                        st.rerun()
+
+with tab2:
+    youtube_url = st.text_input(
+        "Paste YouTube URL",
+        placeholder="https://www.youtube.com/watch?v=...",
+        key="youtube_url_input"
+    )
+    if youtube_url and ("youtube.com" in youtube_url or "youtu.be" in youtube_url):
+        st.session_state['selected_url'] = youtube_url
+        st.session_state['selected_title'] = "YouTube Video"
+        st.session_state['auto_process'] = True
+
+with tab3:
+    st.markdown("### Discover songs by language")
+    st.caption("Curated classics and hits — click to play instantly")
+    selected_language = st.selectbox(
+        "Choose a language",
+        options=list(CURATED_SONGS.keys()),
+        index=0,
+        key="browse_language"
+    )
+    if selected_language:
+        songs = CURATED_SONGS.get(selected_language, [])
+        for i, song in enumerate(songs):
+            col_icon, col_info = st.columns([1, 6])
+            with col_icon:
+                st.markdown(
+                    f'<div style="width:80px;height:60px;background:linear-gradient(135deg,#1a1a2e,#16213e);'
+                    f'border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:24px;">🎵</div>',
+                    unsafe_allow_html=True
+                )
+            with col_info:
+                if st.button(
+                    f"▶️  **{song['title']}**\n\nby {song['artist']}",
+                    key=f"curated_{selected_language}_{i}",
+                    use_container_width=True
+                ):
+                    with st.spinner("Finding best version..."):
+                        results = search_youtube(song['query'], max_results=1)
+                    if results:
+                        st.session_state['selected_url'] = results[0]['url']
+                        st.session_state['selected_title'] = f"{song['title']} - {song['artist']}"
+                        st.session_state['auto_process'] = True
+                        st.rerun()
+                    else:
+                        st.error("Could not find this song on YouTube")
+
+with tab4:
+    cached_songs = get_cached_songs()
+    if cached_songs:
+        st.markdown("### Previously played songs")
+        st.caption("Click to replay instantly (no processing needed)")
+        for i, song in enumerate(cached_songs):
+            col_thumb, col_info = st.columns([1, 6])
+            with col_thumb:
+                if song.get('thumbnail'):
+                    st.image(song['thumbnail'], width=settings.ui.thumbnail_width)
+            with col_info:
+                if st.button(
+                    f"▶️  **{song['title']}**\n\nPlayed: {song['cached_at']}",
+                    key=f"history_{i}",
+                    use_container_width=True
+                ):
+                    st.session_state['selected_url'] = song['url']
+                    st.session_state['selected_title'] = song['title']
+                    cached_data = get_cached_result(song['url'], "auto")
+                    if cached_data:
+                        st.session_state['karaoke_data'] = cached_data
+                    st.rerun()
+        st.divider()
+        if st.button("🗑️ Clear History", key="clear_history"):
+            try:
+                deleted = clear_cache()
+                st.success(f"Cleared {deleted} cached songs")
+            except Exception as e:
+                st.error(f"Failed to clear history: {e}")
+            st.rerun()
+    else:
+        st.info("No songs in history yet. Search for a song to get started!")
+
+# Below the search bar: show player when playing, else progress + "You might also like" + pipeline
 if has_karaoke:
     # -------------------------------------------------------------------------
-    # Karaoke Player View
+    # Karaoke Player (search bar remains above)
     # -------------------------------------------------------------------------
     st.markdown(f"### 🎤 {st.session_state.get('selected_title', 'Now Playing')}")
     st.caption("Click any line to jump • **Shortcuts:** Space = play/pause, ←→ = skip 5s, F = focus mode")
-    
+
     data = st.session_state['karaoke_data']
     mood = data.get('mood', 'playful')
     summary = data.get('summary', '')
     similar_songs = data.get('similar_songs', [])
-    
+
     karaoke_html = render_karaoke_player(
         data['audio_base64'],
         data['segments'],
@@ -180,10 +378,9 @@ if has_karaoke:
         summary,
         similar_songs
     )
-    
-    st.components.v1.html(karaoke_html, height=settings.ui.player_height, scrolling=False)
-    
-    # Similar Songs section
+
+    st.components.v1.html(karaoke_html, height=settings.ui.player_height, scrolling=True)
+
     if similar_songs:
         st.markdown("#### 🎵 You might also like")
         cols = st.columns(min(len(similar_songs), settings.ui.max_similar_songs))
@@ -203,15 +400,12 @@ if has_karaoke:
                         if 'karaoke_data' in st.session_state:
                             del st.session_state['karaoke_data']
                         st.rerun()
-    
-    # Share and action buttons
+
     st.divider()
-    
     song_title = st.session_state.get('selected_title', 'a song')
     segments = data.get('segments', [])
-    
+
     col1, col2, col3 = st.columns(3)
-    
     with col1:
         shareable_html = render_shareable_karaoke(
             song_title,
@@ -228,7 +422,6 @@ if has_karaoke:
             use_container_width=True,
             help="Download an HTML file with the full karaoke player"
         )
-    
     with col2:
         full_lyrics = f"🎶 {song_title}\n\n"
         for seg in segments:
@@ -241,7 +434,6 @@ if has_karaoke:
                 if seg.get('meaning'):
                     full_lyrics += f"💭 {seg['meaning']}\n"
                 full_lyrics += "\n"
-        
         st.download_button(
             "📝 Download Lyrics",
             full_lyrics,
@@ -249,7 +441,6 @@ if has_karaoke:
             mime="text/plain",
             use_container_width=True
         )
-    
     with col3:
         if st.button("🎶 New Song", use_container_width=True):
             for key in ['selected_url', 'selected_title', 'karaoke_data']:
@@ -259,138 +450,42 @@ if has_karaoke:
 
 else:
     # -------------------------------------------------------------------------
-    # Search Interface
+    # No song playing: "You might also like", pipeline (progress bar is above tabs)
     # -------------------------------------------------------------------------
-    processing_container = st.container()
-    
-    if 'selected_url' in st.session_state and 'karaoke_data' not in st.session_state:
-        with processing_container:
-            st.info(f"🎵 Processing: **{st.session_state.get('selected_title', 'Song')}**")
-    
-    st.divider()
-    
-    # Input method tabs
-    tab1, tab2, tab3, tab4 = st.tabs(["🔍 Search", "🔗 YouTube Link", "🌍 Browse by Language", "📚 History"])
-    
-    with tab1:
-        search_query = st_searchbox(
-            get_youtube_suggestions,
-            key="song_search",
-            placeholder="Search any song (e.g., La Vie en Rose, Despacito, Gangnam Style...)",
-            clear_on_submit=False,
-        )
-        
-        if search_query:
-            with st.spinner("Finding songs..."):
-                results = search_youtube(search_query)
-            
-            if results:
-                st.markdown("### Select a song:")
-                for i, result in enumerate(results):
-                    col_thumb, col_info = st.columns([1, 6])
-                    with col_thumb:
-                        if result.get('thumbnail'):
-                            st.image(result['thumbnail'], width=settings.ui.thumbnail_width)
-                    with col_info:
-                        if st.button(
-                            f"▶️  **{result['title']}**\n\n{result['channel']} • {result['duration']}",
-                            key=f"select_{i}",
-                            use_container_width=True
-                        ):
-                            st.session_state['selected_url'] = result['url']
-                            st.session_state['selected_title'] = result['title']
-                            st.session_state['auto_process'] = True
-                            st.rerun()
-    
-    with tab2:
-        youtube_url = st.text_input(
-            "Paste YouTube URL",
-            placeholder="https://www.youtube.com/watch?v=...",
-            key="youtube_url_input"
-        )
-        
-        if youtube_url and ("youtube.com" in youtube_url or "youtu.be" in youtube_url):
-            st.session_state['selected_url'] = youtube_url
-            st.session_state['selected_title'] = "YouTube Video"
-            st.session_state['auto_process'] = True
-    
-    with tab3:
-        st.markdown("### Discover songs by language")
-        st.caption("Curated classics and hits — click to play instantly")
-        
-        selected_language = st.selectbox(
-            "Choose a language",
-            options=list(CURATED_SONGS.keys()),
-            index=0,
-            key="browse_language"
-        )
-        
-        if selected_language:
-            songs = CURATED_SONGS.get(selected_language, [])
-            for i, song in enumerate(songs):
-                col_icon, col_info = st.columns([1, 6])
-                with col_icon:
-                    st.markdown(
-                        f'<div style="width:80px;height:60px;background:linear-gradient(135deg,#1a1a2e,#16213e);'
-                        f'border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:24px;">🎵</div>',
-                        unsafe_allow_html=True
-                    )
-                with col_info:
-                    if st.button(
-                        f"▶️  **{song['title']}**\n\nby {song['artist']}",
-                        key=f"curated_{selected_language}_{i}",
-                        use_container_width=True
-                    ):
-                        with st.spinner("Finding best version..."):
-                            results = search_youtube(song['query'], max_results=1)
-                        if results:
-                            st.session_state['selected_url'] = results[0]['url']
-                            st.session_state['selected_title'] = f"{song['title']} - {song['artist']}"
-                            st.session_state['auto_process'] = True
-                            st.rerun()
-                        else:
-                            st.error("Could not find this song on YouTube")
-    
-    with tab4:
-        cached_songs = get_cached_songs()
-        
-        if cached_songs:
-            st.markdown("### Previously played songs")
-            st.caption("Click to replay instantly (no processing needed)")
-            
-            for i, song in enumerate(cached_songs):
-                col_thumb, col_info = st.columns([1, 6])
-                with col_thumb:
-                    if song.get('thumbnail'):
-                        st.image(song['thumbnail'], width=settings.ui.thumbnail_width)
-                with col_info:
-                    if st.button(
-                        f"▶️  **{song['title']}**\n\nPlayed: {song['cached_at']}",
-                        key=f"history_{i}",
-                        use_container_width=True
-                    ):
-                        st.session_state['selected_url'] = song['url']
-                        st.session_state['selected_title'] = song['title']
-                        cached_data = get_cached_result(song['url'], "auto")
-                        if cached_data:
-                            st.session_state['karaoke_data'] = cached_data
+    # After song ends: show "You might also like"
+    post_play_similar = st.session_state.get('post_play_similar_songs', [])
+    post_play_title = st.session_state.get('post_play_title', '')
+    if post_play_similar:
+        st.divider()
+        st.markdown("#### 🎵 You might also like")
+        if post_play_title:
+            st.caption(f"Just played: **{post_play_title}** — try one of these next or search above.")
+        cols = st.columns(min(len(post_play_similar), settings.ui.max_similar_songs))
+        for idx, song in enumerate(post_play_similar[:settings.ui.max_similar_songs]):
+            with cols[idx]:
+                song_title_text = song.get('title', '')
+                reason_text = song.get('reason', '')
+                if st.button(
+                    f"**{song_title_text}**\n\n_{reason_text}_",
+                    key=f"post_play_similar_{idx}",
+                    use_container_width=True
+                ):
+                    results = search_youtube(song_title_text)
+                    if results:
+                        st.session_state['selected_url'] = results[0]['url']
+                        st.session_state['selected_title'] = results[0]['title']
+                        st.session_state['auto_process'] = True
+                        for k in ['post_play_similar_songs', 'post_play_title']:
+                            st.session_state.pop(k, None)
                         st.rerun()
-            
-            st.divider()
-            if st.button("🗑️ Clear History", key="clear_history"):
-                try:
-                    deleted = clear_cache()
-                    st.success(f"Cleared {deleted} cached songs")
-                except Exception as e:
-                    st.error(f"Failed to clear history: {e}")
-                st.rerun()
-        else:
-            st.info("No songs in history yet. Search for a song to get started!")
     
     # -------------------------------------------------------------------------
     # Processing Pipeline
     # -------------------------------------------------------------------------
     if 'selected_url' in st.session_state and 'karaoke_data' not in st.session_state:
+        # Clear "just played" suggestions when user picks a new song
+        for k in ['post_play_similar_songs', 'post_play_title']:
+            st.session_state.pop(k, None)
         # Check cache first
         cached = get_cached_result(st.session_state['selected_url'], "auto")
         if cached:
@@ -407,20 +502,27 @@ else:
         
         if st.session_state.get('auto_process'):
             del st.session_state['auto_process']
-            
+
             with tempfile.TemporaryDirectory() as tmp_dir:
                 try:
-                    # Progress tracking
-                    progress_bar = st.progress(0)
-                    step_display = st.empty()
-                    detail_display = st.empty()
-                    time_display = st.empty()
+                    # Use progress widgets created above (above "Select a Song"); fallback if needed
+                    if progress_bar is None:
+                        progress_bar = st.progress(0)
+                    if step_display is None:
+                        step_display = st.empty()
+                    if detail_display is None:
+                        detail_display = st.empty()
+                    if time_display is None:
+                        time_display = st.empty()
                     start_time = time.time()
+                    estimate_remaining_str = None  # set after download for steps 2–3
                     
                     steps = ["Download", "Transcribe", "Interpret"]
                     
                     def update_progress(step_num: int, detail: str = ""):
-                        progress_bar.progress(step_num / 3)
+                        # Step 3 = interpret; bar only reaches 100% when player is ready (see Complete block)
+                        p = (step_num / 3) if step_num < 3 else 2.5 / 3
+                        progress_bar.progress(p)
                         step_text = "  →  ".join([
                             f"**{s}**" if i == step_num - 1 else f"~~{s}~~" if i < step_num - 1 else s
                             for i, s in enumerate(steps)
@@ -429,7 +531,10 @@ else:
                         if detail:
                             detail_display.caption(detail)
                         elapsed = time.time() - start_time
-                        time_display.caption(f"⏱️ {elapsed:.1f}s elapsed")
+                        if estimate_remaining_str and step_num >= 2:
+                            time_display.caption(f"⏱️ {elapsed:.1f}s elapsed • Typically {estimate_remaining_str} remaining")
+                        else:
+                            time_display.caption(f"⏱️ {elapsed:.1f}s elapsed")
                     
                     # Step 1: Check duration and download
                     update_progress(1, "Checking video duration...")
@@ -453,6 +558,10 @@ else:
                     ]
                     with animated_status(detail_display, download_messages):
                         audio_path = download_audio(st.session_state['selected_url'], tmp_dir)
+                    
+                    # Publish time estimate for transcription + interpretation (sets user expectation)
+                    low_sec, high_sec = estimate_transcription_and_interpretation_sec(video_duration)
+                    estimate_remaining_str = format_time_estimate(low_sec, high_sec)
                     
                     # Step 2: Transcribe
                     update_progress(2, "Using Whisper AI (auto-detecting language)...")
@@ -561,3 +670,28 @@ else:
         - 📚 Discovering idioms, metaphors, and cultural references  
         - 🎤 Singing along with phonetic pronunciations
         """)
+        
+        # Top foreign-language picks for smooth onboarding
+        st.markdown("### 🎵 Try now")
+        _french = CURATED_SONGS["🇫🇷 French"][0]
+        _spanish = CURATED_SONGS["🇪🇸 Spanish"][0]
+        _korean = CURATED_SONGS["🇰🇷 Korean"][0]
+        _japanese = CURATED_SONGS["🇯🇵 Japanese"][0]
+        onboarding_songs = [_french, _spanish, _korean, _japanese]
+        cols = st.columns(min(4, len(onboarding_songs)))
+        for idx, song in enumerate(onboarding_songs):
+            with cols[idx]:
+                if st.button(
+                    f"▶️ **{song['title']}**\n{song['artist']}",
+                    key=f"onboarding_{idx}",
+                    use_container_width=True
+                ):
+                    with st.spinner("Finding best version..."):
+                        results = search_youtube(song['query'], max_results=1)
+                    if results:
+                        st.session_state['selected_url'] = results[0]['url']
+                        st.session_state['selected_title'] = f"{song['title']} - {song['artist']}"
+                        st.session_state['auto_process'] = True
+                        st.rerun()
+                    else:
+                        st.error("Could not find this song on YouTube")

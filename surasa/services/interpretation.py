@@ -40,6 +40,28 @@ Lyrics to interpret:
 {segments}
 """
 
+# Continuation prompt for long songs: only lyrics (no mood/summary) to avoid truncation
+# Braces in the example JSON are doubled so .format(segments=...) does not treat them as placeholders
+INTERPRETATION_CONTINUATION_PROMPT = """These are more lyrics from the same song. Return ONLY a JSON array of lyric interpretations. No other text.
+
+For each line provide:
+- "original": exact original text
+- "romanized": phonetic pronunciation (empty "" if already Latin script)
+- "translation": natural English translation
+- "meaning": cultural interpretation in 20-30 words
+
+Output ONLY a JSON array, e.g. [{{"original":"...","romanized":"...","translation":"...","meaning":"..."}}, ...]
+
+Lyrics:
+{segments}
+"""
+
+# Max lines per API call so the response JSON doesn't get truncated (≈80 tokens per line → ~25 lines safe for 8k output)
+INTERPRETATION_CHUNK_SIZE = 25
+
+# Shown when the API returns no translation or segment doesn't match any interpretation
+UNTRANSLATED_PLACEHOLDER = "[Not translated]"
+
 # Similar songs prompt template
 SIMILAR_SONGS_PROMPT = """Based on this song, suggest 4 similar songs that the listener would enjoy.
 
@@ -160,63 +182,91 @@ def interpret_segments(segments: List[Dict[str, Any]]) -> Tuple[List[Dict[str, A
             unique_texts.append(s['text'])
             seen.add(text_lower)
     
-    segments_text = "\n".join([f"{i+1}. {t}" for i, t in enumerate(unique_texts)])
     max_retries = settings.api.max_retries
     interpretations = []
     mood = "playful"
     summary = ""
-    
-    for attempt in range(max_retries):
-        try:
-            response = client.messages.create(
-                model=settings.api.claude_model,
-                max_tokens=settings.api.claude_max_tokens,
-                messages=[{
-                    "role": "user", 
-                    "content": INTERPRETATION_PROMPT.format(segments=segments_text)
-                }]
-            )
-            
-            response_text = response.content[0].text
-            json_text = _clean_json_response(response_text)
-            parsed = json.loads(json_text)
-            
-            if isinstance(parsed, dict) and 'lyrics' in parsed:
-                mood = parsed.get('mood', 'playful')
-                summary = parsed.get('summary', '')
-                interpretations = parsed.get('lyrics', [])
-            elif isinstance(parsed, list):
-                interpretations = parsed
-            else:
-                raise json.JSONDecodeError("Unexpected format", json_text, 0)
-            
-            break
-            
-        except json.JSONDecodeError as e:
-            logger.warning(f"JSON parse error on attempt {attempt + 1}: {e}")
-            if attempt < max_retries - 1:
-                time.sleep(1)
-                continue
-            else:
-                # Try partial recovery
-                interpretations = _try_extract_partial_json(response_text, len(unique_texts))
-                if not interpretations:
-                    interpretations = [
+
+    # Chunk to avoid response truncation on long songs (later lines missing translation)
+    chunks = [
+        unique_texts[i : i + INTERPRETATION_CHUNK_SIZE]
+        for i in range(0, len(unique_texts), INTERPRETATION_CHUNK_SIZE)
+    ]
+
+    for chunk_idx, chunk_texts in enumerate(chunks):
+        chunk_segments_text = "\n".join([f"{i+1}. {t}" for i, t in enumerate(chunk_texts)])
+        chunk_interpretations = []
+        is_first_chunk = chunk_idx == 0
+        use_full_prompt = is_first_chunk
+
+        for attempt in range(max_retries):
+            try:
+                if use_full_prompt:
+                    content = INTERPRETATION_PROMPT.format(segments=chunk_segments_text)
+                else:
+                    content = INTERPRETATION_CONTINUATION_PROMPT.format(segments=chunk_segments_text)
+
+                response = client.messages.create(
+                    model=settings.api.claude_model,
+                    max_tokens=settings.api.claude_max_tokens,
+                    messages=[{"role": "user", "content": content}]
+                )
+
+                response_text = response.content[0].text
+                json_text = _clean_json_response(response_text)
+                parsed = json.loads(json_text)
+
+                if use_full_prompt and isinstance(parsed, dict) and 'lyrics' in parsed:
+                    mood = parsed.get('mood', 'playful')
+                    summary = parsed.get('summary', '')
+                    chunk_interpretations = parsed.get('lyrics', [])
+                elif isinstance(parsed, list):
+                    chunk_interpretations = parsed
+                elif use_full_prompt:
+                    raise json.JSONDecodeError("Unexpected format", json_text, 0)
+                else:
+                    chunk_interpretations = []
+
+                if len(chunk_interpretations) < len(chunk_texts):
+                    logger.warning(
+                        f"Chunk {chunk_idx + 1}: got {len(chunk_interpretations)} interpretations for {len(chunk_texts)} lines"
+                    )
+                break
+
+            except json.JSONDecodeError as e:
+                logger.warning(f"Chunk {chunk_idx + 1} JSON error on attempt {attempt + 1}: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(1)
+                    continue
+                if use_full_prompt and not interpretations:
+                    chunk_interpretations = _try_extract_partial_json(response_text, len(chunk_texts))
+                if not chunk_interpretations:
+                    chunk_interpretations = [
                         {
+                            'original': chunk_texts[i] if i < len(chunk_texts) else '',
                             'romanized': '',
-                            'translation': text if i > 0 else '⚠️ AI interpretation failed',
-                            'meaning': '' if i > 0 else 'Try again or choose a different song.'
+                            'translation': chunk_texts[i] if i < len(chunk_texts) else '',
+                            'meaning': ''
                         }
-                        for i, text in enumerate(unique_texts)
+                        for i in range(len(chunk_texts))
                     ]
                 break
-                
-        except Exception as e:
-            logger.error(f"Interpretation error on attempt {attempt + 1}: {e}")
-            if attempt < max_retries - 1:
-                time.sleep(2 ** attempt)
-                continue
-            raise
+
+            except Exception as e:
+                logger.error(f"Chunk {chunk_idx + 1} error on attempt {attempt + 1}: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt)
+                    continue
+                raise
+
+        # Normalize continuation responses to have "original" for matching
+        for i, interp in enumerate(chunk_interpretations):
+            if isinstance(interp, dict) and not interp.get('original') and i < len(chunk_texts):
+                interp['original'] = chunk_texts[i]
+        interpretations.extend(chunk_interpretations)
+
+        if len(chunks) > 1 and chunk_idx < len(chunks) - 1:
+            time.sleep(0.5)
     
     # Build lookup for interpretations - match by "original" field, not by index
     interp_lookup = {}
@@ -231,16 +281,20 @@ def interpret_segments(segments: List[Dict[str, Any]]) -> Tuple[List[Dict[str, A
             else:
                 continue
             
+            raw_translation = (interp.get('translation') or '').strip()
+            # Don't show original as "translation" when API returned empty or same-as-original
+            if not raw_translation or _normalize_text(raw_translation) == key:
+                raw_translation = UNTRANSLATED_PLACEHOLDER
             interp_lookup[key] = {
                 'romanized': interp.get('romanized', ''),
-                'translation': interp.get('translation', original_text or ''),
+                'translation': raw_translation,
                 'meaning': interp.get('meaning', '')
             }
         elif i < len(unique_texts):
             # Fallback for non-dict responses
             interp_lookup[_normalize_text(unique_texts[i])] = {
                 'romanized': '',
-                'translation': unique_texts[i],
+                'translation': UNTRANSLATED_PLACEHOLDER,
                 'meaning': '(interpretation unavailable)'
             }
     
@@ -274,7 +328,7 @@ def interpret_segments(segments: List[Dict[str, Any]]) -> Tuple[List[Dict[str, A
         else:
             logger.debug(f"No match found for: '{seg['text'][:50]}...'")
             seg['romanized'] = ''
-            seg['translation'] = seg['text']
+            seg['translation'] = UNTRANSLATED_PLACEHOLDER
             seg['meaning'] = ''
         result.append(seg)
     

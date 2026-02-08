@@ -10,6 +10,21 @@
     -webkit-tap-highlight-color: transparent;
 }
 
+/* Iframe: make player-wrapper the scroll container so sticky works */
+html, body {
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+}
+
+/* Player Wrapper: scroll container so summary + controls can stick */
+.player-wrapper {
+    height: 100%;
+    overflow-y: auto;
+    overflow-x: hidden;
+    background: linear-gradient(135deg, var(--bg-gradient-1) 0%, var(--bg-gradient-2) 100%);
+}
+
 .karaoke-container {
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     width: 100%;
@@ -21,11 +36,6 @@
     flex-direction: column;
     height: 500px;
     position: relative;
-}
-
-/* Player Wrapper for Fullscreen */
-.player-wrapper {
-    background: linear-gradient(135deg, var(--bg-gradient-1) 0%, var(--bg-gradient-2) 100%);
 }
 
 .player-wrapper:fullscreen,
@@ -45,13 +55,17 @@
     height: calc(100vh - 280px);
 }
 
-/* Audio Controls - Standalone at top */
+/* Audio Controls - Standalone at top; sticky so lyrics can scroll under it */
 .audio-controls-standalone {
-    background: linear-gradient(135deg, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0.03) 100%);
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    background: linear-gradient(135deg, var(--bg-gradient-1) 0%, var(--bg-gradient-2) 100%);
     border-radius: var(--radius-md);
     padding: var(--spacing-md);
     margin-bottom: var(--spacing-md);
     border: 1px solid rgba(255,255,255,0.1);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
 }
 
 /* Fullscreen button */
@@ -101,13 +115,18 @@
     accent-color: var(--accent-color);
 }
 
-/* Summary Card - separate from player */
+/* Summary Card - sticky when present, above play track */
 .summary-card {
-    background: linear-gradient(135deg, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0.03) 100%);
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    position: sticky;
+    top: 0;
+    z-index: 15;
+    background: linear-gradient(135deg, var(--bg-gradient-1) 0%, var(--bg-gradient-2) 100%);
     border-radius: var(--radius-md);
     padding: var(--spacing-md);
     margin-bottom: var(--spacing-md);
     border: 1px solid rgba(255,255,255,0.1);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
 }
 
 .summary-label {
@@ -122,7 +141,6 @@
 .summary-text {
     font-size: clamp(0.85rem, 2.5vw, 0.95rem);
     color: rgba(255,255,255,0.85);
-    font-style: italic;
     line-height: 1.5;
 }
 

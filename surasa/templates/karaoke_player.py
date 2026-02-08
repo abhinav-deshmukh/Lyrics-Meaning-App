@@ -214,6 +214,11 @@ def _get_karaoke_javascript() -> str:
         audio.addEventListener('ended', () => {
             updatePlayPauseBtn();
             showCelebration();
+            // Auto-return to search after a short delay so user sees the search bar without clicking
+            setTimeout(() => {
+                const url = (window.top.location.origin || '') + (window.top.location.pathname || '/') + '?new_search=1';
+                window.top.location.assign(url);
+            }, 2500);
         });
         
         // Fullscreen functionality
@@ -310,7 +315,13 @@ def render_karaoke_player(
     
     <!-- Fullscreen wrapper -->
     <div class="player-wrapper" id="playerWrapper">
-        <!-- Player Controls (progress bar at top) -->
+        <!-- About this song (above play track; only when summary is available) -->
+        {f'''<div class="summary-card">
+            <div class="summary-label">About this song</div>
+            <div class="summary-text">{summary_escaped}</div>
+        </div>''' if summary_escaped else ''}
+        
+        <!-- Player Controls (progress bar) -->
         <div class="audio-controls-standalone">
             <audio id="audioPlayer" style="display:none;">
                 <source src="data:audio/{audio_format};base64,{audio_base64}" type="audio/{audio_format}">
@@ -330,12 +341,6 @@ def render_karaoke_player(
                 </div>
             </div>
         </div>
-        
-        <!-- Song Summary Card -->
-        {f'''<div class="summary-card">
-            <div class="summary-label">About this song</div>
-            <div class="summary-text">"{summary_escaped}"</div>
-        </div>''' if summary_escaped else ''}
         
         <div class="karaoke-container" id="karaokeContainer" style="position: relative;">
             <!-- Celebration overlay (visual only, no text) -->
