@@ -654,7 +654,7 @@ else:
     
     # Welcome message
     if 'selected_url' not in st.session_state:
-        st.info("👆 Search for a song or paste a YouTube link — works with 99+ languages!")
+        st.info("👆 Search for a song — works with 99+ languages!")
         
         st.markdown("### How it works")
         st.markdown("""
