@@ -248,7 +248,7 @@ elif 'selected_url' in st.session_state and 'karaoke_data' not in st.session_sta
         st.info(f"🎵 Processing: **{st.session_state.get('selected_title', 'Song')}**")
 
 # Search bar + tabs (Select a song appears inside Search tab, below this)
-tab1, tab2, tab3, tab4 = st.tabs(["🔍 Search", "🔗 YouTube Link", "🌍 Browse by Language", "📚 History"])
+tab1, tab2, tab3 = st.tabs(["🔍 Search", "🌍 Browse by Language", "📚 History"])
 
 with tab1:
     search_query = st_searchbox(
@@ -324,7 +324,7 @@ with tab3:
                     else:
                         st.error("Could not find this song on YouTube")
 
-with tab4:
+with tab3:
     cached_songs = get_cached_songs()
     if cached_songs:
         st.markdown("### Previously played songs")
@@ -658,7 +658,7 @@ else:
         
         st.markdown("### How it works")
         st.markdown("""
-        1. **Search** for any song or paste a YouTube link
+        1. **Search** for any song
         2. **AI transcribes** the lyrics (auto-detects language)
         3. **AI interprets** meaning with cultural context
         4. **Karaoke mode** syncs lyrics as the song plays
