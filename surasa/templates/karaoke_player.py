@@ -116,11 +116,28 @@ def _get_karaoke_javascript() -> str:
             if (duration > 0) durationDisplay.textContent = formatTime(duration);
             
             // Update active lyrics
+            const inFocusMode = karaokeContainer.classList.contains('focus-mode');
+            let activeIdx = -1;
+            for (let i = 0; i < segments.length; i++) {
+                if (currentTime >= segments[i].start && currentTime < segments[i].end) {
+                    activeIdx = i;
+                    break;
+                }
+            }
+            // In focus mode, if we're in a gap (instrumental), keep previous lyric highlighted until next one
+            if (activeIdx < 0 && inFocusMode) {
+                for (let i = segments.length - 1; i >= 0; i--) {
+                    if (currentTime >= segments[i].end) {
+                        activeIdx = i;
+                        break;
+                    }
+                }
+            }
             segments.forEach((seg, idx) => {
                 const el = document.getElementById(`segment-${idx}`);
                 if (!el) return;
                 
-                if (currentTime >= seg.start && currentTime < seg.end) {
+                if (idx === activeIdx) {
                     if (!el.classList.contains('active')) {
                         el.classList.add('active');
                         el.classList.remove('past');

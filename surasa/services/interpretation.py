@@ -332,6 +332,67 @@ def interpret_segments(segments: List[Dict[str, Any]]) -> Tuple[List[Dict[str, A
             seg['meaning'] = ''
         result.append(seg)
     
+    # Retry: one extra API call for lines that are still untranslated
+    retry_texts = list({_normalize_text(seg['text']) for seg in result if seg.get('translation') == UNTRANSLATED_PLACEHOLDER and seg.get('text', '').strip()})
+    if retry_texts:
+        seen_norm = set()
+        retry_originals = []
+        for seg in result:
+            if seg.get('translation') != UNTRANSLATED_PLACEHOLDER or not seg.get('text', '').strip():
+                continue
+            n = _normalize_text(seg['text'])
+            if n not in seen_norm:
+                seen_norm.add(n)
+                retry_originals.append(seg['text'])
+        if retry_originals:
+            retry_segments_text = "\n".join([f"{i+1}. {t}" for i, t in enumerate(retry_originals)])
+            try:
+                response = client.messages.create(
+                    model=settings.api.claude_model,
+                    max_tokens=min(2048, 80 * len(retry_originals) + 200),
+                    messages=[{"role": "user", "content": INTERPRETATION_CONTINUATION_PROMPT.format(segments=retry_segments_text)}]
+                )
+                response_text = response.content[0].text
+                json_text = _clean_json_response(response_text)
+                parsed = json.loads(json_text)
+                retry_list = parsed if isinstance(parsed, list) else []
+                retry_lookup = {}
+                for i, interp in enumerate(retry_list):
+                    if not isinstance(interp, dict):
+                        continue
+                    orig = (interp.get('original') or (retry_originals[i] if i < len(retry_originals) else '')).strip()
+                    if not orig:
+                        continue
+                    key = _normalize_text(orig)
+                    raw = (interp.get('translation') or '').strip()
+                    if not raw or _normalize_text(raw) == key:
+                        raw = UNTRANSLATED_PLACEHOLDER
+                    retry_lookup[key] = {
+                        'romanized': interp.get('romanized', ''),
+                        'translation': raw,
+                        'meaning': interp.get('meaning', '')
+                    }
+                for seg in result:
+                    if seg.get('translation') != UNTRANSLATED_PLACEHOLDER:
+                        continue
+                    text_key = _normalize_text(seg['text'])
+                    interp = retry_lookup.get(text_key)
+                    if not interp:
+                        # Safer fuzzy: only use substring match when exactly one candidate
+                        fuzzy_candidates = [
+                            lookup_val for lookup_key, lookup_val in retry_lookup.items()
+                            if text_key in lookup_key or lookup_key in text_key
+                        ]
+                        if len(fuzzy_candidates) == 1:
+                            interp = fuzzy_candidates[0]
+                    if interp and interp['translation'] != UNTRANSLATED_PLACEHOLDER:
+                        seg['romanized'] = interp['romanized']
+                        seg['translation'] = interp['translation']
+                        seg['meaning'] = interp.get('meaning', '')
+                        logger.debug(f"Retry translated: '{seg['text'][:40]}...'")
+            except Exception as e:
+                logger.warning(f"Retry interpretation failed: {e}")
+    
     # Validate mood
     if mood not in VALID_MOODS:
         mood = "playful"
