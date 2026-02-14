@@ -331,22 +331,52 @@ def search_youtube(query: str, max_results: int = 5) -> list:
         return []
 
 def download_audio(url: str, output_dir: str) -> str:
-    """Download audio from YouTube URL (optimized for speed)."""
+    """Download audio from YouTube URL with retry on transient failures."""
+    import time as _time
     output_template = os.path.join(output_dir, "audio.%(ext)s")
-    
-    # Use lower quality (9 = smallest) - we only need it for transcription
-    result = subprocess.run(
-        ["yt-dlp", "-x", "--audio-format", "mp3", "--audio-quality", "9",
-         "-o", output_template, "--no-playlist", url],
-        capture_output=True, text=True, timeout=120
-    )
-    
-    # Find the downloaded file
-    for f in os.listdir(output_dir):
-        if f.startswith("audio."):
-            return os.path.join(output_dir, f)
-    
-    raise Exception(f"Download failed: {result.stderr}")
+    max_retries = 3
+    last_error = ""
+
+    for attempt in range(max_retries):
+        # Clean up any partial downloads from previous attempts
+        if attempt > 0:
+            for f in os.listdir(output_dir):
+                if f.startswith("audio."):
+                    try:
+                        os.remove(os.path.join(output_dir, f))
+                    except Exception:
+                        pass
+
+        try:
+            result = subprocess.run(
+                ["yt-dlp", "-x", "--audio-format", "mp3", "--audio-quality", "9",
+                 "-o", output_template, "--no-playlist", url],
+                capture_output=True, text=True, timeout=120
+            )
+
+            # Find the downloaded file
+            for f in os.listdir(output_dir):
+                if f.startswith("audio."):
+                    filepath = os.path.join(output_dir, f)
+                    # Validate: file must be non-empty (>1KB to rule out error pages)
+                    if os.path.getsize(filepath) > 1024:
+                        return filepath
+                    # Too small — likely a corrupt/empty download
+                    last_error = "Downloaded file is too small (possibly corrupt)"
+                    os.remove(filepath)
+                    break
+
+            last_error = result.stderr or "No audio file produced"
+
+        except subprocess.TimeoutExpired:
+            last_error = "Download timed out after 120 seconds"
+        except Exception as e:
+            last_error = str(e)
+
+        if attempt < max_retries - 1:
+            _time.sleep(2 ** attempt)
+
+    raise Exception(f"Download failed after {max_retries} attempts: {last_error}")
 
 # Chunking: process long audio in pieces to avoid timeouts and improve reliability
 CHUNK_DURATION_SEC = 240  # 4 minutes per chunk
@@ -405,89 +435,121 @@ def _transcribe_one_file(audio_path: str, language: str, client) -> list:
         })
     return segments
 
+
+def _transcribe_chunk_with_retry(chunk_path: str, offset_sec: float, language: str, client, max_retries: int = 3) -> list:
+    """Transcribe a single chunk with per-chunk retry. Returns segments with offsets applied."""
+    import time
+    for attempt in range(max_retries):
+        try:
+            segs = _transcribe_one_file(chunk_path, language, client)
+            return [{'start': s['start'] + offset_sec, 'end': s['end'] + offset_sec, 'text': s['text']} for s in segs]
+        except Exception:
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+                continue
+            # Permanent failure for this chunk — return empty (graceful partial)
+            return []
+
+
 def transcribe_with_timestamps(audio_path: str, language: str = None) -> list:
-    """Transcribe audio with timestamps. Chunks long audio and merges segments; retries if incomplete."""
+    """
+    Transcribe audio with timestamps.
+    - Splits long audio into chunks
+    - Retries each chunk independently (up to 3 times)
+    - If some chunks fail, returns partial results from successful chunks
+    - After all chunks, validates overall result; retries whole pipeline once if empty
+    """
     import time
     client = OpenAI()
     chunks = _split_audio_into_chunks(audio_path)
     tmp_dir = os.path.dirname(audio_path)
     created_chunk_files = [p for p, _ in chunks if p != audio_path]
 
-    # Retry for connection errors and for incomplete results
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            all_segments = []
-            for chunk_path, offset_sec in chunks:
-                segs = _transcribe_one_file(chunk_path, language, client)
-                for s in segs:
-                    all_segments.append({
-                        'start': s['start'] + offset_sec,
-                        'end': s['end'] + offset_sec,
-                        'text': s['text']
-                    })
-            all_segments.sort(key=lambda x: x['start'])
+    def _cleanup():
+        for p in created_chunk_files:
+            try:
+                if os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
 
-            # Retry if transcription is empty or clearly incomplete
-            text_segments = [s for s in all_segments if s['text'].strip()]
-            if not text_segments and attempt < max_retries - 1:
-                time.sleep(2 ** attempt)
-                continue
-            if text_segments and len(' '.join(s['text'] for s in text_segments).strip()) < 20 and attempt < max_retries - 1:
-                time.sleep(2 ** attempt)
-                continue
+    # Transcribe each chunk with independent retry
+    all_segments = []
+    failed_chunks = 0
+    for chunk_path, offset_sec in chunks:
+        segs = _transcribe_chunk_with_retry(chunk_path, offset_sec, language, client)
+        if segs:
+            all_segments.extend(segs)
+        else:
+            failed_chunks += 1
 
-            # Clean up chunk files we created (not the original)
-            for p in created_chunk_files:
-                try:
-                    if os.path.exists(p):
-                        os.remove(p)
-                except Exception:
-                    pass
-            return all_segments
+    all_segments.sort(key=lambda x: x['start'])
 
-        except Exception as e:
-            for p in created_chunk_files:
-                try:
-                    if os.path.exists(p):
-                        os.remove(p)
-                except Exception:
-                    pass
-            if attempt < max_retries - 1:
-                time.sleep(2 ** attempt)
-                continue
-            raise e
+    # Quality check: if ALL chunks failed or result is trivially short, retry entire pipeline once
+    text_segments = [s for s in all_segments if s['text'].strip()]
+    total_text = ' '.join(s['text'] for s in text_segments).strip() if text_segments else ''
+
+    if not text_segments or len(total_text) < 20:
+        time.sleep(2)
+        # One full retry of all chunks
+        all_segments = []
+        for chunk_path, offset_sec in chunks:
+            segs = _transcribe_chunk_with_retry(chunk_path, offset_sec, language, client)
+            if segs:
+                all_segments.extend(segs)
+        all_segments.sort(key=lambda x: x['start'])
+
+    _cleanup()
+    return all_segments
 
 
-def interpret_segments(segments: list) -> list:
+INTERPRETATION_BATCH_SIZE = 25  # Lines per API call — prevents max_tokens truncation
+
+
+def _extract_json_array(response_text: str) -> list:
+    """Robustly extract a JSON array from an LLM response, handling markdown fences and extra text."""
+    json_text = response_text
+
+    # Remove markdown code blocks if present
+    if "```json" in json_text:
+        json_text = json_text.split("```json")[1].split("```")[0]
+    elif "```" in json_text:
+        parts = json_text.split("```")
+        if len(parts) >= 2:
+            json_text = parts[1]
+
+    json_text = json_text.strip()
+
+    # Find the JSON array using bracket matching
+    if not json_text.startswith('['):
+        start = json_text.find('[')
+        if start >= 0:
+            depth = 0
+            end = start
+            for i, c in enumerate(json_text[start:], start):
+                if c == '[':
+                    depth += 1
+                elif c == ']':
+                    depth -= 1
+                    if depth == 0:
+                        end = i + 1
+                        break
+            json_text = json_text[start:end]
+
+    return json.loads(json_text)
+
+
+def _interpret_batch(texts: list, client, max_retries: int = 3) -> dict:
     """
-    Single Sonnet call for high-quality interpretation:
-    romanization + translation + cultural meaning in one request.
+    Interpret a batch of unique lyric lines. Returns dict {text_lower: interp_dict}.
+    Retries on network errors and JSON parse failures independently.
+    On permanent failure, returns empty dict (never raises).
     """
     import time
-    client = Anthropic()
-    
-    # Filter to segments with actual text
-    text_segments = [s for s in segments if s['text'].strip()]
-    
-    if not text_segments:
-        for seg in segments:
-            seg['romanized'] = ''
-            seg['translation'] = '(no lyrics detected)'
-            seg['meaning'] = ''
-        return segments
-    
-    # Deduplicate - only interpret unique lyrics
-    unique_texts = []
-    seen = set()
-    for s in text_segments:
-        text_lower = s['text'].strip().lower()
-        if text_lower not in seen:
-            unique_texts.append(s['text'])
-            seen.add(text_lower)
-    
-    segments_text = "\n".join([f"{i+1}. {t}" for i, t in enumerate(unique_texts)])
-    max_retries = 3
+    if not texts:
+        return {}
+
+    segments_text = "\n".join([f"{i+1}. {t}" for i, t in enumerate(texts)])
 
     for attempt in range(max_retries):
         try:
@@ -496,88 +558,122 @@ def interpret_segments(segments: list) -> list:
                 max_tokens=8000,
                 messages=[{"role": "user", "content": INTERPRETATION_PROMPT.format(segments=segments_text)}]
             )
-            
-            response_text = response.content[0].text
-            json_text = response_text
-            
-            # Remove markdown code blocks if present
-            if "```json" in json_text:
-                json_text = json_text.split("```json")[1].split("```")[0]
-            elif "```" in json_text:
-                parts = json_text.split("```")
-                if len(parts) >= 2:
-                    json_text = parts[1]
-            
-            json_text = json_text.strip()
-            
-            # Find the JSON array using bracket matching
-            if not json_text.startswith('['):
-                start = json_text.find('[')
-                if start >= 0:
-                    depth = 0
-                    end = start
-                    for i, c in enumerate(json_text[start:], start):
-                        if c == '[':
-                            depth += 1
-                        elif c == ']':
-                            depth -= 1
-                            if depth == 0:
-                                end = i + 1
-                                break
-                    json_text = json_text[start:end]
-            
-            interpretations = json.loads(json_text)
 
-            # Build lookup and apply to segments
-            interp_lookup = {}
-            for i, text in enumerate(unique_texts):
+            interpretations = _extract_json_array(response.content[0].text)
+
+            lookup = {}
+            for i, text in enumerate(texts):
                 if i < len(interpretations):
-                    interp_lookup[text.strip().lower()] = interpretations[i]
-            
-            result = []
-            for seg in segments:
-                text_key = seg['text'].strip().lower()
-                if text_key in interp_lookup:
-                    interp = interp_lookup[text_key]
-                    seg['romanized'] = interp.get('romanized', '')
-                    seg['translation'] = interp.get('translation', '')
-                    seg['meaning'] = interp.get('meaning', '')
-                else:
-                    seg['romanized'] = ''
-                    seg['translation'] = ''
-                    seg['meaning'] = ''
-                result.append(seg)
+                    interp = interpretations[i]
+                    # Only accept entries that have a non-empty translation
+                    if (interp.get('translation') or '').strip():
+                        lookup[text.strip().lower()] = interp
 
-            # Retry if too many segments have missing translation/meaning
-            with_text = [s for s in result if s['text'].strip()]
-            complete = sum(1 for s in with_text if (s.get('translation') or '').strip())
-            if not with_text or complete >= 0.8 * len(with_text) or attempt == max_retries - 1:
-                return result
-            time.sleep(1)
-            continue
+            return lookup
 
         except json.JSONDecodeError:
             if attempt < max_retries - 1:
-                time.sleep(1)
+                time.sleep(1 + attempt)
                 continue
-            else:
-                for seg in segments:
-                    seg['romanized'] = ''
-                    seg['translation'] = '(translation failed - please try again)'
-                    seg['meaning'] = ''
-                return segments
-        except Exception as e:
+            return {}
+        except Exception:
             if attempt < max_retries - 1:
                 time.sleep(2 ** attempt)
                 continue
-            else:
-                for seg in segments:
-                    seg['romanized'] = ''
-                    seg['translation'] = f'(error: {str(e)[:50]})'
-                    seg['meaning'] = ''
-                return segments
+            return {}
 
-    return segments
+    return {}
+
+
+def interpret_segments(segments: list) -> list:
+    """
+    Interpret lyrics with robust retry strategy:
+    1. Deduplicate unique lines
+    2. Split into batches of ~25 lines (prevents max_tokens truncation)
+    3. Each batch gets independent retries (3 attempts)
+    4. After all batches, identify lines still missing translations
+    5. Gap-fill retry: one focused call for just the missing lines
+    6. Never throw away successful translations — graceful partial results
+    """
+    import time
+    client = Anthropic()
+
+    # Filter to segments with actual text
+    text_segments = [s for s in segments if s['text'].strip()]
+
+    if not text_segments:
+        for seg in segments:
+            seg['romanized'] = ''
+            seg['translation'] = '(no lyrics detected)'
+            seg['meaning'] = ''
+        return segments
+
+    # Deduplicate — only interpret unique lyrics
+    unique_texts = []
+    seen = set()
+    for s in text_segments:
+        text_lower = s['text'].strip().lower()
+        if text_lower not in seen:
+            unique_texts.append(s['text'])
+            seen.add(text_lower)
+
+    # ── Phase 1: Batch interpretation ──
+    # Split into batches to avoid max_tokens truncation on long songs
+    batches = []
+    for i in range(0, len(unique_texts), INTERPRETATION_BATCH_SIZE):
+        batches.append(unique_texts[i:i + INTERPRETATION_BATCH_SIZE])
+
+    # Interpret each batch independently — failures in one batch don't affect others
+    interp_lookup = {}  # {text_lower: interp_dict}
+    for batch in batches:
+        batch_result = _interpret_batch(batch, client)
+        interp_lookup.update(batch_result)
+
+    # ── Phase 2: Gap-fill retry for missing lines ──
+    missing_texts = [t for t in unique_texts if t.strip().lower() not in interp_lookup]
+
+    if missing_texts and len(missing_texts) <= len(unique_texts) * 0.5:
+        # Only gap-fill if ≤50% are missing (if more, the prompt/model might be refusing entirely)
+        # Use smaller batches for the retry to maximize success
+        retry_batch_size = min(15, INTERPRETATION_BATCH_SIZE)
+        for i in range(0, len(missing_texts), retry_batch_size):
+            retry_batch = missing_texts[i:i + retry_batch_size]
+            time.sleep(1)  # Brief pause before retry
+            retry_result = _interpret_batch(retry_batch, client, max_retries=2)
+            interp_lookup.update(retry_result)
+    elif missing_texts and len(missing_texts) > len(unique_texts) * 0.5:
+        # Most lines failed — likely a systemic issue. One full retry of everything.
+        time.sleep(2)
+        full_retry_lookup = {}
+        for batch in batches:
+            batch_result = _interpret_batch(batch, client, max_retries=2)
+            full_retry_lookup.update(batch_result)
+        # Merge: only fill in lines still missing (don't overwrite successes)
+        for key, val in full_retry_lookup.items():
+            if key not in interp_lookup:
+                interp_lookup[key] = val
+
+    # ── Phase 3: Apply interpretations to segments ──
+    result = []
+    for seg in segments:
+        text_key = seg['text'].strip().lower()
+        if text_key in interp_lookup:
+            interp = interp_lookup[text_key]
+            seg['romanized'] = interp.get('romanized', '')
+            seg['translation'] = interp.get('translation', '')
+            seg['meaning'] = interp.get('meaning', '')
+        elif seg['text'].strip():
+            # Line had text but interpretation permanently failed
+            seg['romanized'] = ''
+            seg['translation'] = seg['text']  # Fall back to original text
+            seg['meaning'] = ''
+        else:
+            seg['romanized'] = ''
+            seg['translation'] = ''
+            seg['meaning'] = ''
+        result.append(seg)
+
+    return result
 
 
 def _is_instrumental_segment(seg: dict) -> bool:
@@ -1229,6 +1325,8 @@ def create_karaoke_player(audio_base64: str, segments: list, audio_format: str =
     </div>
     
     <script>
+        // Scroll Streamlit app to top when player loads (e.g. after selecting a song)
+        try {{ if (window.parent && window.parent !== window) window.parent.scrollTo({{ top: 0, left: 0, behavior: 'smooth' }}); }} catch (e) {{}}
         (function() {{
             // ═══════════════════════════════════════════════════════════════════
             // KARAOKE SYNC ENGINE - First Principles Implementation
@@ -2006,9 +2104,30 @@ CURATED_SONGS = {
     ],
 }
 
+# Related moods: suggestions can boost "similar mood" (e.g. melancholic → bittersweet)
+MOOD_FAMILIES = [
+    {"melancholic", "bittersweet", "nostalgic", "dreamy"},
+    {"upbeat", "energetic", "joyful"},
+    {"romantic", "peaceful"},
+]
+MAX_SUGGESTIONS_PER_ARTIST = 2  # Diversity: avoid 5 songs from the same artist
+SEARCH_FALLBACK_MAX = 2  # Max suggestions to fill via YouTube search when thin
+
+
 def _normalize_for_match(s: str) -> str:
     """Lowercase and strip for artist/language/mood comparison."""
     return (s or "").strip().lower()
+
+
+def _mood_in_same_family(mood_a: str, mood_b: str) -> bool:
+    """True if both moods belong to the same MOOD_FAMILIES group."""
+    a, b = _normalize_for_match(mood_a), _normalize_for_match(mood_b)
+    if not a or not b or a == b:
+        return False
+    for family in MOOD_FAMILIES:
+        if a in family and b in family:
+            return True
+    return False
 
 
 def _artist_match(channel: str, artist: str) -> bool:
@@ -2069,6 +2188,9 @@ def get_suggested_songs(
             if mood_lower and song_mood == mood_lower:
                 score += 2
                 reasons.append("Same mood")
+            elif mood_lower and _mood_in_same_family(mood_lower, song_mood):
+                score += 1
+                reasons.append("Similar mood")
             if lang_lower and song_lang == lang_lower:
                 score += 1
                 reasons.append("Same language")
@@ -2125,17 +2247,58 @@ def get_suggested_songs(
 
     candidates.sort(key=sort_key)
 
-    # ─── 4. Take up to max_suggestions, dedupe by _key ───
+    # ─── 4. Take up to max_suggestions, dedupe by _key, cap per-artist for diversity ───
     out = []
+    artist_count = {}
     for c in candidates:
         if len(out) >= max_suggestions:
             break
         key_id = c.get("_key")
         if key_id in seen_keys:
             continue
+        subtitle = (c.get("subtitle") or "").strip().lower()
+        if subtitle and artist_count.get(subtitle, 0) >= MAX_SUGGESTIONS_PER_ARTIST:
+            continue
         seen_keys.add(key_id)
+        if subtitle:
+            artist_count[subtitle] = artist_count.get(subtitle, 0) + 1
         item = {k: v for k, v in c.items() if not k.startswith("_")}
         out.append(item)
+
+    # ─── 5. Fallback: fill with YouTube search when we have few suggestions ───
+    need = max_suggestions - len(out)
+    if need > 0 and SEARCH_FALLBACK_MAX > 0 and (channel or current_title):
+        try:
+            # Prefer "more from this artist" then "songs like this"
+            query = f"{channel} songs" if channel else f"{current_title} official"
+            limit = min(need, SEARCH_FALLBACK_MAX)
+            search_results = search_youtube(query, max_results=limit + 3)
+            added = 0
+            for r in search_results:
+                if added >= limit:
+                    break
+                url = r.get("url")
+                title = r.get("title", "Unknown")
+                ch = r.get("channel", "")
+                if not url or url == current_url or url in seen_urls:
+                    continue
+                key_id = _song_key(title, ch)
+                if key_id in seen_keys:
+                    continue
+                seen_urls.add(url)
+                seen_keys.add(key_id)
+                out.append({
+                    "title": title,
+                    "subtitle": ch,
+                    "url": url,
+                    "thumbnail": r.get("thumbnail", ""),
+                    "type": "search",
+                    "reason": "More like this" if channel else "Similar",
+                })
+                added += 1
+        except Exception:
+            pass
+
     return out
 
 # Page config
@@ -2170,6 +2333,13 @@ st.markdown("""
 st.title("🎶 Surasa")
 st.caption("सुर + रस — Understand any song. Transcribe, translate, and feel the meaning.")
 
+# Scroll to top when a new song is selected (consumed once per rerun)
+if st.session_state.pop('_scroll_to_top', False):
+    st.components.v1.html(
+        "<script>try { window.parent.scrollTo({ top: 0, left: 0, behavior: 'smooth' }); } catch(e){} </script>",
+        height=0,
+    )
+
 # Resolve History click: load from cache and rerun so song shows above tabs
 pending_url = st.session_state.pop('pending_history_url', None)
 pending_title = st.session_state.pop('pending_history_title', None)
@@ -2203,6 +2373,10 @@ has_karaoke = 'karaoke_data' in st.session_state
 # Processing bar (when a song is selected but not yet loaded)
 processing_container = st.container()
 if 'selected_url' in st.session_state and 'karaoke_data' not in st.session_state:
+    st.components.v1.html(
+        "<script>try { var w = window.parent && window.parent !== window ? window.parent : window; w.scrollTo({ top: 0, left: 0, behavior: 'smooth' }); } catch (e) {} </script>",
+        height=0,
+    )
     with processing_container:
         title = st.session_state.get('selected_title', 'Song')
         st.info(f"**Preparing “{title}”** — transcribing and interpreting lyrics. This may take a minute.")
@@ -2228,7 +2402,7 @@ if has_karaoke:
     suggested = data.get('suggested_songs') or []
     if suggested:
         st.markdown("**You might also like**")
-        st.caption("Similar by artist, mood, or language — one click to play")
+        st.caption("Same artist, similar mood, language, or more like this — one click to play")
         for idx, s in enumerate(suggested):
             col_thumb, col_info, col_btn = st.columns([1, 4, 1])
             with col_thumb:
@@ -2251,6 +2425,14 @@ if has_karaoke:
                         st.session_state['pending_history_title'] = s['title']
                         st.session_state['pending_history_cache_key'] = s['cache_key']
                         st.rerun()
+                elif s.get('type') == 'search' and s.get('url'):
+                    if st.button("▶ Play", key=f"sug_srch_{idx}", help="Play this song"):
+                        st.session_state.pop('karaoke_data', None)
+                        st.session_state['selected_url'] = s['url']
+                        st.session_state['selected_title'] = s.get('title', 'Unknown')
+                        st.session_state['auto_process'] = True
+                        st.session_state['_scroll_to_top'] = True
+                        st.rerun()
                 elif s.get('type') == 'curated' and s.get('query'):
                     if st.button("▶ Play", key=f"sug_cur_{idx}", help="Play this song"):
                         with st.spinner("Finding video..."):
@@ -2260,6 +2442,7 @@ if has_karaoke:
                             st.session_state['selected_url'] = res[0]['url']
                             st.session_state['selected_title'] = res[0]['title']
                             st.session_state['auto_process'] = True
+                            st.session_state['_scroll_to_top'] = True
                             st.rerun()
         st.divider()
     
@@ -2335,8 +2518,12 @@ with tab1:
                         st.session_state['selected_url'] = result['url']
                         st.session_state['selected_title'] = result['title']
                         st.session_state['auto_process'] = True
+                        st.session_state['_scroll_to_top'] = True
                         st.rerun()
                 st.divider()
+        else:
+            st.markdown("#### No results found")
+            st.caption(f"We couldn't find anything for **\"{search_query}\"**. Try a different spelling, add the artist name, or paste a YouTube link below.")
     st.caption("Or paste a YouTube link")
     youtube_url = st.text_input(
         "YouTube URL",
@@ -2349,6 +2536,7 @@ with tab1:
         st.session_state['selected_url'] = youtube_url
         st.session_state['selected_title'] = "YouTube Video"
         st.session_state['auto_process'] = True
+        st.session_state['_scroll_to_top'] = True
         st.rerun()
 
 with tab2:
@@ -2387,6 +2575,7 @@ with tab2:
                         st.session_state['selected_url'] = res[0]['url']
                         st.session_state['selected_title'] = res[0]['title']
                         st.session_state['auto_process'] = True
+                        st.session_state['_scroll_to_top'] = True
                         st.rerun()
                     else:
                         st.error("Could not find a video for this song.")
@@ -2417,7 +2606,16 @@ with tab3:
                 st.session_state.pop("confirm_clear_history", None)
                 st.rerun()
     elif not cached_songs:
-        st.caption("No songs yet. Play something from Search or Browse — it'll show up here for quick replay.")
+        st.markdown("""
+<div style="text-align: center; padding: 2rem 1rem;">
+    <div style="font-size: 3rem; margin-bottom: 0.5rem;">📜</div>
+    <div style="font-size: 1.1rem; font-weight: 600; margin-bottom: 0.5rem;">Your listening history will appear here</div>
+    <div style="color: rgba(255,255,255,0.6); font-size: 0.9rem; max-width: 360px; margin: 0 auto;">
+        Every song you play is saved for instant replay.<br>
+        Head to <b>Search</b> or <b>Browse</b> to get started!
+    </div>
+</div>
+""", unsafe_allow_html=True)
     else:
         if st.button("🗑️ Clear history", help="Remove all songs from history"):
             st.session_state["confirm_clear_history"] = True
@@ -2558,7 +2756,11 @@ if not has_karaoke:
                     # Count unique segments for optimization info
                     text_segments = [s for s in segments if s['text'].strip()]
                     unique_count = len(set(s['text'].strip().lower() for s in text_segments))
-                    detail_display.caption(f"✓ Found {len(text_segments)} lyric lines ({unique_count} unique)")
+
+                    if not text_segments:
+                        detail_display.caption("⚠️ No lyrics detected — this may be an instrumental track")
+                    else:
+                        detail_display.caption(f"✓ Found {len(text_segments)} lyric lines ({unique_count} unique)")
                     time_module.sleep(0.5)  # Brief pause to show the count
                     
                     # Step 3: Interpret with Claude Sonnet
@@ -2575,16 +2777,33 @@ if not has_karaoke:
                     with animated_status(detail_display, interpret_messages, interval=2.5):
                         interpreted_segments = interpret_segments(segments)
                         interpreted_segments = merge_instrumental_segments(interpreted_segments)
+
+                    # Surface partial translation warnings
+                    if text_segments:
+                        translated_count = sum(
+                            1 for s in interpreted_segments
+                            if s['text'].strip() and (s.get('translation') or '').strip()
+                               and s.get('translation') != s['text']
+                        )
+                        if translated_count < len(text_segments) * 0.5:
+                            st.warning(f"⚠️ Only {translated_count}/{len(text_segments)} lines were translated. "
+                                       "Some lines may show original text instead.")
                     
                     # Language, mood, and summary for badges, theme, and card
-                    lang, mood, summary = get_language_and_mood(interpreted_segments)
+                    try:
+                        lang, mood, summary = get_language_and_mood(interpreted_segments)
+                    except Exception:
+                        lang, mood, summary = "Unknown", "chill", ""
                     current_url = st.session_state['selected_url']
                     current_title = st.session_state.get('selected_title', 'Unknown')
                     channel = meta.get('channel')
-                    suggested_songs = get_suggested_songs(
-                        lang, current_url, current_title,
-                        mood=mood, channel=channel
-                    )
+                    try:
+                        suggested_songs = get_suggested_songs(
+                            lang, current_url, current_title,
+                            mood=mood, channel=channel
+                        )
+                    except Exception:
+                        suggested_songs = []
                     
                     # Final: Build player
                     detail_display.caption("Building karaoke player...")
@@ -2625,20 +2844,98 @@ if not has_karaoke:
                     st.rerun()
                     
                 except Exception as e:
-                    st.error(f"Error: {e}")
-                    import traceback
-                    st.code(traceback.format_exc())
+                    err_msg = str(e)[:200]
+                    st.error("Something went wrong while processing this song.")
+                    st.caption(f"Details: {err_msg}")
+                    if st.button("🔄 Try again", type="primary"):
+                        st.session_state.pop('karaoke_data', None)
+                        st.rerun()
     
     if 'selected_url' not in st.session_state:
-        with st.expander("How it works"):
-            st.markdown("""
-            1. **Search** or paste a link → we find the song.
-            2. **AI transcribes** lyrics and detects the language.
-            3. **AI interprets** meaning, idioms, and context.
-            4. **Karaoke mode** syncs lyrics as you play — tap a line to jump, press **F** for focus mode.
+        # ── Listening stats badge ──
+        _stats_songs = get_cached_songs()
+        if _stats_songs:
+            _stats_count = len(_stats_songs)
+            _stats_langs = set()
+            _stats_moods = set()
+            for _s in _stats_songs:
+                if _s.get('language'):
+                    _stats_langs.add(_s['language'])
+                if _s.get('mood'):
+                    _stats_moods.add(_s['mood'])
+            _lang_count = len(_stats_langs)
+            _parts = [f"**{_stats_count}** {'song' if _stats_count == 1 else 'songs'} explored"]
+            if _lang_count:
+                _parts.append(f"**{_lang_count}** {'language' if _lang_count == 1 else 'languages'}")
+            if _stats_moods:
+                _parts.append(f"**{len(_stats_moods)}** {'mood' if len(_stats_moods) == 1 else 'moods'}")
+            _stats_text = " · ".join(_parts)
+            st.markdown(f"""
+<div style="background: linear-gradient(135deg, rgba(0,212,255,0.08), rgba(255,215,0,0.08));
+            border: 1px solid rgba(0,212,255,0.15); border-radius: 12px;
+            padding: 12px 20px; margin-bottom: 1rem; text-align: center;">
+    <span style="font-size: 0.95rem;">🎧 {_stats_text}</span>
+</div>""", unsafe_allow_html=True)
 
-            **Best for:** understanding songs in any language, learning idioms and culture, singing along with romanization.
-            """)
+        # ── "Try it" demo cards ──
+        _demo_songs = [
+            {"title": "La Vie en Rose", "artist": "Édith Piaf", "lang": "🇫🇷 French",
+             "query": "La Vie en Rose Edith Piaf official", "video_id": "sGP3lwDqDtw",
+             "teaser": "\"Quand il me prend dans ses bras\" → \"When he takes me in his arms\" — a 1947 chanson about seeing life through the rose-tinted lens of love."},
+            {"title": "Gangnam Style", "artist": "PSY", "lang": "🇰🇷 Korean",
+             "query": "PSY Gangnam Style official", "video_id": "9bZkp7q19f0",
+             "teaser": "\"오빤 강남스타일\" → \"Oppa is Gangnam Style\" — a satirical take on Seoul's flashy Gangnam district and its culture of appearances."},
+            {"title": "Despacito", "artist": "Luis Fonsi", "lang": "🇪🇸 Spanish",
+             "query": "Despacito Luis Fonsi official video", "video_id": "kJQP7kiw5Fk",
+             "teaser": "\"Quiero respirar tu cuello despacito\" → \"I want to breathe your neck slowly\" — a reggaeton love song blending Puerto Rican slang with poetic seduction."},
+        ]
+        st.markdown("#### See what Surasa does")
+        st.caption("Pick a song to experience AI-powered lyrics, translations, and cultural context")
+        _demo_cols = st.columns(len(_demo_songs))
+        for _di, _ds in enumerate(_demo_songs):
+            with _demo_cols[_di]:
+                _thumb = _youtube_thumbnail_url(_ds["video_id"])
+                st.markdown(f"""
+<div style="border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 12px;
+            background: rgba(255,255,255,0.03); height: 100%;">
+    <img src="{html.escape(_thumb)}" width="100%"
+         style="border-radius: 8px; aspect-ratio: 16/9; object-fit: cover; display: block;" />
+    <div style="margin-top: 10px;">
+        <div style="font-weight: 600; font-size: 0.95rem;">{html.escape(_ds['title'])}</div>
+        <div style="color: rgba(255,255,255,0.5); font-size: 0.8rem;">{html.escape(_ds['artist'])} · {html.escape(_ds['lang'])}</div>
+    </div>
+    <div style="color: rgba(255,255,255,0.55); font-size: 0.8rem; margin-top: 8px; font-style: italic;
+                line-height: 1.4;">{html.escape(_ds['teaser'])}</div>
+</div>""", unsafe_allow_html=True)
+                if st.button(f"▶ Try this", key=f"demo_{_di}", type="primary", use_container_width=True):
+                    with st.spinner("Finding video..."):
+                        _res = search_youtube(_ds['query'])
+                    if _res:
+                        st.session_state.pop('karaoke_data', None)
+                        st.session_state['selected_url'] = _res[0]['url']
+                        st.session_state['selected_title'] = _res[0]['title']
+                        st.session_state['auto_process'] = True
+                        st.session_state['_scroll_to_top'] = True
+                        st.rerun()
+
+        # ── How it works (compact) ──
+        st.markdown("")
+        with st.expander("How it works"):
+            _hw_cols = st.columns(4)
+            _hw_steps = [
+                ("🔍", "Search", "Find any song by name or paste a YouTube link"),
+                ("🎤", "Transcribe", "AI listens and detects lyrics + language"),
+                ("🔮", "Interpret", "Get translations, romanization, and cultural meaning"),
+                ("🎶", "Play", "Karaoke mode syncs lyrics as you listen"),
+            ]
+            for _hi, (_icon, _label, _desc) in enumerate(_hw_steps):
+                with _hw_cols[_hi]:
+                    st.markdown(f"""
+<div style="text-align: center; padding: 8px 4px;">
+    <div style="font-size: 1.8rem;">{_icon}</div>
+    <div style="font-weight: 600; font-size: 0.9rem; margin: 4px 0;">{_label}</div>
+    <div style="color: rgba(255,255,255,0.5); font-size: 0.78rem; line-height: 1.3;">{_desc}</div>
+</div>""", unsafe_allow_html=True)
 
 st.divider()
 st.caption("© 2026 Abhinav Deshmukh · Lyrics and interpretations are AI-generated; use for learning only.")
