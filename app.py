@@ -724,11 +724,21 @@ def create_karaoke_player(audio_base64: str, segments: list, audio_format: str =
             border-radius: 16px;
             padding: 24px;
             color: white;
-            height: 550px;
+            height: 80vh;
+            min-height: 400px;
+            max-height: 700px;
             display: flex;
             flex-direction: column;
             overflow: hidden;
             position: relative;
+        }}
+        @media (max-width: 768px) {{
+            .karaoke-container {{
+                border-radius: 10px;
+                padding: 12px;
+                height: 85vh;
+                max-height: none;
+            }}
         }}
         .wave-bars {{
             position: absolute;
@@ -1022,6 +1032,158 @@ def create_karaoke_player(audio_base64: str, segments: list, audio_format: str =
             top: 0; left: 0; width: 100vw; height: 100vh;
             pointer-events: none;
             z-index: 9999;
+        }}
+        
+        /* ─── MOBILE: prevent double-tap zoom on interactive elements ─── */
+        .play-pause-btn, .skip-btn, .lyric-segment, #focusModeBtn {{
+            touch-action: manipulation;
+        }}
+        
+        /* ─── MOBILE RESPONSIVE ─── */
+        @media (max-width: 768px) {{
+            /* Audio controls */
+            .audio-controls {{
+                gap: 8px;
+                padding: 6px 4px;
+                flex-wrap: wrap;
+            }}
+            .play-pause-btn {{
+                width: 44px;
+                height: 44px;
+                font-size: 18px;
+            }}
+            .player-badges {{
+                order: -1;
+                width: 100%;
+                justify-content: center;
+                margin-left: 0;
+                margin-bottom: 4px;
+            }}
+            .player-badge {{
+                font-size: 0.7em;
+                padding: 3px 8px;
+            }}
+            
+            /* Seek bar — larger thumb for touch */
+            .seek-row {{
+                gap: 6px;
+            }}
+            .seek-row input[type="range"] {{
+                height: 8px;
+            }}
+            .seek-row input[type="range"]::-webkit-slider-thumb {{
+                width: 22px;
+                height: 22px;
+            }}
+            .seek-row input[type="range"]::-moz-range-thumb {{
+                width: 22px;
+                height: 22px;
+            }}
+            .skip-btn {{
+                font-size: 0.7em;
+                padding: 6px 10px;
+                min-height: 32px;
+            }}
+            
+            /* Progress info */
+            .progress-info {{
+                font-size: 0.75em;
+                gap: 4px;
+                flex-wrap: wrap;
+            }}
+            
+            /* Song summary */
+            .song-summary {{
+                font-size: 0.8em;
+                padding: 8px 10px;
+                top: 90px;
+            }}
+            .song-summary-label {{
+                font-size: 0.65em;
+            }}
+            
+            /* Lyrics */
+            .lyrics-container {{
+                padding: 12px;
+            }}
+            .lyric-segment {{
+                padding: 12px 10px;
+                margin: 6px 0;
+            }}
+            .lyric-segment.active {{
+                transform: scale(1);
+            }}
+            .original {{
+                font-size: 1.1em;
+            }}
+            .romanized {{
+                font-size: 0.95em;
+            }}
+            .translation {{
+                font-size: 0.95em;
+            }}
+            .meaning {{
+                font-size: 0.8em;
+                padding: 6px 10px;
+            }}
+            .time-badge {{
+                font-size: 0.65em;
+            }}
+            
+            /* Focus mode */
+            .focus-overlay {{
+                padding: 20px;
+            }}
+            .focus-overlay .focus-original {{
+                font-size: 1.4em;
+            }}
+            .focus-overlay .focus-romanized {{
+                font-size: 1.1em;
+                margin-bottom: 10px;
+            }}
+            .focus-overlay .focus-translation {{
+                font-size: 1.2em;
+            }}
+            .focus-overlay .focus-meaning {{
+                font-size: 0.85em;
+            }}
+            .focus-overlay .focus-hint {{
+                font-size: 0.7em;
+                bottom: 10px;
+            }}
+            
+            /* Wave bars — fewer visible on mobile */
+            .wave-bars {{
+                gap: 4px;
+                padding: 0 8px;
+            }}
+            .wave-bars span {{
+                max-width: 10px;
+            }}
+        }}
+        
+        /* Small phones (≤400px) */
+        @media (max-width: 400px) {{
+            .karaoke-container {{
+                padding: 8px;
+            }}
+            .play-pause-btn {{
+                width: 40px;
+                height: 40px;
+                font-size: 16px;
+            }}
+            .original {{
+                font-size: 1em;
+            }}
+            .translation {{
+                font-size: 0.85em;
+            }}
+            .focus-overlay .focus-original {{
+                font-size: 1.2em;
+            }}
+            .focus-overlay .focus-translation {{
+                font-size: 1em;
+            }}
         }}
     </style>
     
@@ -1637,6 +1799,15 @@ def create_karaoke_player(audio_base64: str, segments: list, audio_format: str =
                     stopConfetti();
                 }}
             }});
+            
+            // Resize confetti canvas on orientation change / window resize
+            window.addEventListener('resize', () => {{
+                const canvas = document.getElementById('confettiCanvas');
+                if (canvas && canvas.style.display !== 'none') {{
+                    canvas.width = window.innerWidth;
+                    canvas.height = window.innerHeight;
+                }}
+            }});
         }})();
     </script>
     """
@@ -1974,6 +2145,27 @@ st.set_page_config(
     layout="wide"
 )
 
+# Mobile-friendly global styles
+st.markdown("""
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<style>
+    /* Streamlit container padding on mobile */
+    @media (max-width: 768px) {
+        .block-container { padding-left: 1rem !important; padding-right: 1rem !important; }
+        h1 { font-size: 1.5rem !important; }
+        h3 { font-size: 1.1rem !important; }
+        .stTabs [data-baseweb="tab-list"] { gap: 0.5rem; }
+        .stTabs [data-baseweb="tab"] { font-size: 0.85rem; padding: 0.4rem 0.6rem; }
+        /* Stack columns vertically on mobile */
+        [data-testid="column"] { width: 100% !important; flex: 100% !important; min-width: 100% !important; }
+        /* Larger tap targets for buttons */
+        .stButton > button { min-height: 44px; font-size: 0.9rem; }
+        /* Search input */
+        .stTextInput input { font-size: 16px !important; }  /* prevents iOS zoom on focus */
+    }
+</style>
+""", unsafe_allow_html=True)
+
 # Header
 st.title("🎶 Surasa")
 st.caption("सुर + रस — Understand any song. Transcribe, translate, and feel the meaning.")
@@ -2030,7 +2222,7 @@ if has_karaoke:
         summary=data.get('summary'),
     )
     
-    st.components.v1.html(karaoke_html, height=550, scrolling=False)
+    st.components.v1.html(karaoke_html, height=700, scrolling=False)
     
     # Suggested next (similar songs)
     suggested = data.get('suggested_songs') or []
