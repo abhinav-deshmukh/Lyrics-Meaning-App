@@ -4,3 +4,4 @@ anthropic>=0.18.0
 streamlit>=1.30.0
 streamlit-searchbox>=0.1.0
 yt-dlp>=2024.1.0
+pydub>=0.25.0
