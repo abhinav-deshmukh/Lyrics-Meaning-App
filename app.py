@@ -16,6 +16,7 @@ import urllib.request
 import urllib.parse
 import time as time_module
 from contextlib import contextmanager
+from typing import Optional
 from dotenv import load_dotenv
 from openai import OpenAI
 from anthropic import Anthropic
@@ -136,6 +137,33 @@ def _get_youtube_metadata(url: str) -> dict:
     except Exception:
         pass
     return {'channel': 'Unknown', 'duration': '', 'duration_seconds': None}
+
+
+# Max duration for suggested/search results (songs only, no long mixes)
+MAX_SUGGESTION_DURATION_SEC = 600  # 10 minutes
+
+
+def _parse_duration_to_seconds(duration_val) -> Optional[int]:
+    """Parse duration from int (seconds) or string like '3:45' / '1:02:30'. Returns seconds or None."""
+    if duration_val is None:
+        return None
+    if isinstance(duration_val, (int, float)):
+        return int(duration_val) if duration_val >= 0 else None
+    s = (duration_val or "").strip()
+    if not s:
+        return None
+    parts = s.split(":")
+    try:
+        if len(parts) == 1:
+            return int(parts[0])
+        if len(parts) == 2:
+            return int(parts[0]) * 60 + int(parts[1])
+        if len(parts) >= 3:
+            return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+    except (ValueError, IndexError):
+        pass
+    return None
+
 
 def save_to_cache(url: str, language: str, data: dict, title: str = None):
     """Save processed song to cache with metadata for history."""
@@ -267,10 +295,12 @@ def _video_id_from_url(url: str) -> str:
 
 
 def search_youtube(query: str, max_results: int = 5) -> list:
-    """Search YouTube and return list of results (including thumbnail URL)."""
+    """Search YouTube and return list of results (≤10 min). Fetches extra then filters by duration."""
     try:
+        # Request more so we have enough after filtering by 10 min limit
+        fetch_count = max(max_results * 3, 15)
         result = subprocess.run(
-            ["yt-dlp", f"ytsearch{max_results}:{query}", "--dump-json", "--flat-playlist"],
+            ["yt-dlp", f"ytsearch{fetch_count}:{query}", "--dump-json", "--flat-playlist"],
             capture_output=True, text=True, timeout=30
         )
         
@@ -278,6 +308,11 @@ def search_youtube(query: str, max_results: int = 5) -> list:
         for line in result.stdout.strip().split('\n'):
             if line:
                 data = json.loads(line)
+                duration_sec = data.get('duration')
+                if duration_sec is None and data.get('duration_string'):
+                    duration_sec = _parse_duration_to_seconds(data.get('duration_string'))
+                if duration_sec is None or duration_sec > MAX_SUGGESTION_DURATION_SEC:
+                    continue
                 vid = data.get('id', '')
                 url = f"https://www.youtube.com/watch?v={vid}"
                 thumb = data.get('thumbnail') or _youtube_thumbnail_url(vid)
@@ -288,6 +323,8 @@ def search_youtube(query: str, max_results: int = 5) -> list:
                     'duration': data.get('duration_string', ''),
                     'thumbnail': thumb,
                 })
+                if len(results) >= max_results:
+                    break
         return results
     except Exception as e:
         st.error(f"Search failed: {e}")
@@ -707,7 +744,7 @@ def create_karaoke_player(audio_base64: str, segments: list, audio_format: str =
             gap: 6px;
             padding: 0 16px;
             pointer-events: none;
-            z-index: 0;
+            z-index: 9;
         }}
         .wave-bars span {{
             flex: 1;
@@ -721,50 +758,55 @@ def create_karaoke_player(audio_base64: str, segments: list, audio_format: str =
             transition: transform 0.05s ease-out;
         }}
         .player-badges {{
-            position: absolute;
-            top: 12px;
-            right: 12px;
             display: flex;
-            gap: 8px;
+            gap: 6px;
             flex-shrink: 0;
-            z-index: 5;
+            margin-left: auto;
         }}
         .player-badge {{
             font-size: 0.75em;
             padding: 4px 10px;
             border-radius: 20px;
-            background: rgba(255,255,255,0.2);
+            background: rgba(255,255,255,0.15);
             color: rgba(255,255,255,0.95);
+            white-space: nowrap;
         }}
         .song-summary {{
             font-size: 0.9em;
             color: rgba(255,255,255,0.85);
             line-height: 1.4;
-            margin-bottom: 12px;
+            margin-bottom: 8px;
             padding: 10px 14px;
-            background: rgba(255,255,255,0.08);
+            background: {bg_end};
             border-radius: 8px;
-            border-left: 3px solid rgba(0, 212, 255, 0.5);
+            border-left: 3px solid {wave_color.replace('0.2', '0.6').replace('0.15', '0.6').replace('0.12', '0.6')};
             flex-shrink: 0;
-            position: relative;
-            z-index: 2;
+            position: sticky;
+            top: 72px;
+            z-index: 5;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.3);
         }}
         .song-summary-label {{
             font-size: 0.7em;
             text-transform: uppercase;
             letter-spacing: 0.08em;
-            color: rgba(0, 212, 255, 0.9);
+            color: {wave_color.replace('0.2', '0.9').replace('0.15', '0.9').replace('0.12', '0.9')};
             margin-bottom: 4px;
         }}
         
         .audio-controls {{
+            position: sticky;
+            top: 0;
+            z-index: 6;
             flex-shrink: 0;
-            z-index: 5;
-            margin-bottom: 12px;
-            padding-bottom: 8px;
+            margin-bottom: 4px;
+            padding: 8px 4px;
             display: flex;
             align-items: center;
             gap: 16px;
+            background: {bg_start};
+            box-shadow: 0 2px 12px rgba(0,0,0,0.3);
+            border-radius: 0 0 8px 8px;
         }}
         .play-pause-btn {{
             width: 52px;
@@ -794,9 +836,53 @@ def create_karaoke_player(audio_base64: str, segments: list, audio_format: str =
             min-width: 0;
         }}
         .audio-controls audio {{
+            display: none;
+        }}
+        .seek-row {{
+            display: flex;
+            align-items: center;
+            gap: 10px;
             width: 100%;
-            border-radius: 8px;
-            height: 40px;
+            margin-top: 6px;
+        }}
+        .seek-row input[type="range"] {{
+            flex: 1;
+            min-width: 0;
+            height: 6px;
+            -webkit-appearance: none;
+            appearance: none;
+            background: rgba(255,255,255,0.2);
+            border-radius: 3px;
+        }}
+        .seek-row input[type="range"]::-webkit-slider-thumb {{
+            -webkit-appearance: none;
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            background: #00d4ff;
+            cursor: pointer;
+        }}
+        .seek-row input[type="range"]::-moz-range-thumb {{
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            background: #00d4ff;
+            cursor: pointer;
+            border: none;
+        }}
+        .skip-btn {{
+            flex-shrink: 0;
+            font-size: 0.75em;
+            padding: 4px 8px;
+            border-radius: 6px;
+            border: 1px solid rgba(255,255,255,0.3);
+            background: rgba(255,255,255,0.1);
+            color: #ccc;
+            cursor: pointer;
+        }}
+        .skip-btn:hover {{
+            background: rgba(255,255,255,0.2);
+            color: #fff;
         }}
         
         .lyrics-wrapper {{
@@ -804,11 +890,10 @@ def create_karaoke_player(audio_base64: str, segments: list, audio_format: str =
             min-height: 0;
             position: relative;
             z-index: 2;
-        }}
-        .lyrics-container {{
-            height: 100%;
             overflow-y: auto;
             scroll-behavior: smooth;
+        }}
+        .lyrics-container {{
             padding: 20px;
             background: rgba(255,255,255,0.05);
             border-radius: 12px;
@@ -817,14 +902,12 @@ def create_karaoke_player(audio_base64: str, segments: list, audio_format: str =
             display: none;
             position: absolute;
             top: 0; left: 0; right: 0; bottom: 0;
-            background: linear-gradient(135deg, rgba(26, 26, 46, 0.85) 0%, rgba(22, 33, 62, 0.85) 100%);
+            background: rgba(255, 255, 255, 0.1);
             border-radius: 12px;
             align-items: center;
             justify-content: center;
             padding: 40px;
             z-index: 8;
-            backdrop-filter: blur(4px);
-            -webkit-backdrop-filter: blur(4px);
         }}
         .focus-overlay.show {{
             display: flex;
@@ -935,37 +1018,40 @@ def create_karaoke_player(audio_base64: str, segments: list, audio_format: str =
         }}
         
         #confettiCanvas {{
-            position: absolute;
-            top: 0; left: 0; width: 100%; height: 100%;
+            position: fixed;
+            top: 0; left: 0; width: 100vw; height: 100vh;
             pointer-events: none;
-            border-radius: 12px;
-            z-index: 10;
+            z-index: 9999;
         }}
     </style>
     
     <div id="karaokeContainer" class="karaoke-container" style="position: relative;" tabindex="0">
         <canvas id="confettiCanvas"></canvas>
         <div class="wave-bars"><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
-        <div class="player-badges">
-            <span class="player-badge" id="langBadge">{lang_badge}</span>
-            <span class="player-badge" id="moodBadge">{mood_badge}</span>
-        </div>
-        {f'<div class="song-summary"><div class="song-summary-label">Summary</div>{summary_escaped}</div>' if summary_escaped else ''}
-        <div class="audio-controls" style="position:relative;z-index:2">
-            <button type="button" class="play-pause-btn" id="playPauseBtn" title="Play / Pause" aria-label="Play or pause">▶</button>
-            <div class="audio-wrap">
-            <audio id="audioPlayer" controls>
-                <source src="data:audio/{audio_format};base64,{audio_base64}" type="audio/{audio_format}">
-            </audio>
-            <div class="progress-info">
-                <span id="currentSegment">Press play to start</span>
-                <span id="timeDisplay">0:00 / 0:00</span>
-                <button type="button" id="focusModeBtn" style="font-size:0.8em;padding:2px 8px;border-radius:6px;border:1px solid rgba(255,255,255,0.3);background:rgba(255,255,255,0.1);color:#ccc;cursor:pointer;">Focus mode</button>
-            </div>
-            </div>
-        </div>
-        
         <div class="lyrics-wrapper">
+            <div class="audio-controls">
+                <button type="button" class="play-pause-btn" id="playPauseBtn" title="Play / Pause" aria-label="Play or pause">▶</button>
+                <div class="audio-wrap">
+                <audio id="audioPlayer">
+                    <source src="data:audio/{audio_format};base64,{audio_base64}" type="audio/{audio_format}">
+                </audio>
+                <div class="seek-row">
+                    <button type="button" class="skip-btn" id="skipBackBtn" title="Back 10 seconds">−10s</button>
+                    <input type="range" id="seekBar" min="0" max="100" value="0" step="0.1" title="Seek">
+                    <button type="button" class="skip-btn" id="skipAheadBtn" title="Ahead 10 seconds">+10s</button>
+                </div>
+                <div class="progress-info">
+                    <span id="currentSegment">Press play to start</span>
+                    <span id="timeDisplay">0:00 / 0:00</span>
+                    <button type="button" id="focusModeBtn" style="font-size:0.8em;padding:2px 8px;border-radius:6px;border:1px solid rgba(255,255,255,0.3);background:rgba(255,255,255,0.1);color:#ccc;cursor:pointer;">Focus mode</button>
+                </div>
+                </div>
+                <div class="player-badges">
+                    <span class="player-badge" id="langBadge">{lang_badge}</span>
+                    <span class="player-badge" id="moodBadge">{mood_badge}</span>
+                </div>
+            </div>
+            {f'<div class="song-summary"><div class="song-summary-label">Summary</div>{summary_escaped}</div>' if summary_escaped else ''}
             <div class="lyrics-container" id="lyricsContainer">
             </div>
             <div class="focus-overlay" id="focusOverlay">
@@ -1059,19 +1145,19 @@ def create_karaoke_player(audio_base64: str, segments: list, audio_format: str =
                 
                 analyser.getByteFrequencyData(dataArray);
                 
-                // Map frequency bins to our wave bars
-                // Focus on lower-mid frequencies (where vocals/melody live)
-                const binStep = Math.floor(dataArray.length / NUM_BARS);
+                // Use only the lower half of the spectrum (bins 0–63): most musical energy
+                // is there; high bins are often near zero so half the bars never moved.
+                const useBins = Math.min(64, dataArray.length);
+                const binsPerBar = useBins / NUM_BARS;
                 
                 waveBars.forEach((bar, i) => {{
-                    // Sample from different frequency ranges
-                    // Weight towards lower frequencies (more musical content)
-                    const binIndex = Math.min(i * binStep + Math.floor(binStep / 2), dataArray.length - 1);
-                    
-                    // Get value (0-255) and normalize to scale (0.1 to 1.0)
-                    const value = dataArray[binIndex];
+                    const startBin = Math.floor(i * binsPerBar);
+                    const endBin = Math.min(Math.floor((i + 1) * binsPerBar), useBins);
+                    let value = 0;
+                    for (let b = startBin; b < endBin; b++) {{
+                        if (dataArray[b] > value) value = dataArray[b];
+                    }}
                     const scale = 0.1 + (value / 255) * 0.9;
-                    
                     bar.style.transform = `scaleY(${{scale}})`;
                     bar.style.opacity = 0.4 + (value / 255) * 0.6;
                 }});
@@ -1298,6 +1384,12 @@ def create_karaoke_player(audio_base64: str, segments: list, audio_format: str =
                 // Update time display (this is cheap, do every frame)
                 timeDisplay.textContent = `${{formatTime(currentTime)}} / ${{formatTime(duration)}}`;
                 
+                // Update seek bar (only when user is not dragging)
+                if (seekBar && !userSeeking) {{
+                    seekBar.max = duration || 100;
+                    seekBar.value = currentTime;
+                }}
+                
                 // Find and update active line (only updates DOM if changed)
                 const newIndex = findActiveLineIndex(currentTime);
                 updateActiveLine(newIndex);
@@ -1357,6 +1449,44 @@ def create_karaoke_player(audio_base64: str, segments: list, audio_format: str =
             updatePlayPauseIcon();
             
             // ─────────────────────────────────────────────────────────────────
+            // SEEK BAR + SKIP ±10s
+            // ─────────────────────────────────────────────────────────────────
+            const seekBar = document.getElementById('seekBar');
+            const skipBackBtn = document.getElementById('skipBackBtn');
+            const skipAheadBtn = document.getElementById('skipAheadBtn');
+            let userSeeking = false;
+            
+            audio.addEventListener('loadedmetadata', () => {{
+                if (seekBar) seekBar.max = audio.duration || 0;
+            }});
+            audio.addEventListener('durationchange', () => {{
+                if (seekBar) seekBar.max = audio.duration || 0;
+            }});
+            
+            if (seekBar) {{
+                seekBar.addEventListener('input', () => {{
+                    userSeeking = true;
+                    const t = parseFloat(seekBar.value);
+                    if (!isNaN(t)) audio.currentTime = t;
+                }});
+                seekBar.addEventListener('change', () => {{ userSeeking = false; }});
+            }}
+            
+            if (skipBackBtn) {{
+                skipBackBtn.addEventListener('click', (e) => {{
+                    e.preventDefault();
+                    audio.currentTime = Math.max(0, audio.currentTime - 10);
+                }});
+            }}
+            if (skipAheadBtn) {{
+                skipAheadBtn.addEventListener('click', (e) => {{
+                    e.preventDefault();
+                    const d = audio.duration;
+                    audio.currentTime = d ? Math.min(d, audio.currentTime + 10) : audio.currentTime + 10;
+                }});
+            }}
+            
+            // ─────────────────────────────────────────────────────────────────
             // CLICK TO SEEK
             // ─────────────────────────────────────────────────────────────────
             segmentElements.forEach((el, idx) => {{
@@ -1400,56 +1530,113 @@ def create_karaoke_player(audio_base64: str, segments: list, audio_format: str =
             // ─────────────────────────────────────────────────────────────────
             // CONFETTI CELEBRATION
             // ─────────────────────────────────────────────────────────────────
+            let confettiAnimationId = null;
+            
             function triggerConfetti() {{
                 const canvas = document.getElementById('confettiCanvas');
                 if (!canvas) return;
                 
-                const rect = canvas.getBoundingClientRect();
-                canvas.width = rect.width;
-                canvas.height = rect.height;
+                // Full viewport
+                canvas.width = window.innerWidth;
+                canvas.height = window.innerHeight;
+                canvas.style.display = 'block';
                 const ctx = canvas.getContext('2d');
-                const colors = ['#00d4ff', '#ffd700', '#ff6b9d', '#7b68ee', '#50fa7b', '#ff79c6'];
+                const colors = ['#00d4ff', '#ffd700', '#ff6b9d', '#7b68ee', '#50fa7b', '#ff79c6', '#ff6347', '#40e0d0'];
                 const particles = [];
-                const count = 120;
-                const cx = canvas.width / 2;
-                const cy = canvas.height / 2;
                 
-                for (let i = 0; i < count; i++) {{
-                    particles.push({{
-                        x: cx, y: cy,
-                        vx: (Math.random() - 0.5) * 14,
-                        vy: (Math.random() - 0.6) * 12 - 2,
-                        color: colors[Math.floor(Math.random() * colors.length)],
-                        size: 4 + Math.random() * 6,
-                        life: 1
-                    }});
-                }}
-                
-                let start = null;
-                function burst(t) {{
-                    if (!start) start = t;
-                    const elapsed = (t - start) / 1000;
-                    if (elapsed > 3.5) {{
-                        ctx.clearRect(0, 0, canvas.width, canvas.height);
-                        return;
+                // Spawn confetti pieces: rectangles and circles falling from the top
+                function spawnBatch(count) {{
+                    for (let i = 0; i < count; i++) {{
+                        particles.push({{
+                            x: Math.random() * canvas.width,
+                            y: -10 - Math.random() * 40,
+                            vx: (Math.random() - 0.5) * 3,
+                            vy: 2 + Math.random() * 4,
+                            color: colors[Math.floor(Math.random() * colors.length)],
+                            size: 5 + Math.random() * 7,
+                            rotation: Math.random() * 360,
+                            rotationSpeed: (Math.random() - 0.5) * 8,
+                            shape: Math.random() > 0.5 ? 'rect' : 'circle',
+                            wobble: Math.random() * Math.PI * 2,
+                            wobbleSpeed: 0.03 + Math.random() * 0.05,
+                            opacity: 0.8 + Math.random() * 0.2,
+                        }});
                     }}
-                    ctx.clearRect(0, 0, canvas.width, canvas.height);
-                    particles.forEach(p => {{
-                        p.x += p.vx;
-                        p.y += p.vy;
-                        p.vy += 0.35;
-                        p.vx *= 0.99;
-                        p.vy *= 0.99;
-                        p.life = Math.max(0, 1 - elapsed / 3.5);
-                        ctx.globalAlpha = p.life;
-                        ctx.fillStyle = p.color;
-                        ctx.fillRect(p.x - p.size/2, p.y - p.size/2, p.size, p.size);
-                    }});
-                    ctx.globalAlpha = 1;
-                    requestAnimationFrame(burst);
                 }}
-                requestAnimationFrame(burst);
+                
+                // Initial burst
+                spawnBatch(80);
+                
+                let lastSpawn = 0;
+                
+                function render(t) {{
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                    
+                    // Spawn new confetti every 300ms to keep it raining
+                    if (t - lastSpawn > 300) {{
+                        spawnBatch(8);
+                        lastSpawn = t;
+                    }}
+                    
+                    // Update and draw
+                    for (let i = particles.length - 1; i >= 0; i--) {{
+                        const p = particles[i];
+                        p.wobble += p.wobbleSpeed;
+                        p.x += p.vx + Math.sin(p.wobble) * 0.8;
+                        p.y += p.vy;
+                        p.rotation += p.rotationSpeed;
+                        p.vy += 0.02;  // gentle gravity
+                        
+                        // Remove if off-screen
+                        if (p.y > canvas.height + 20) {{
+                            particles.splice(i, 1);
+                            continue;
+                        }}
+                        
+                        ctx.save();
+                        ctx.globalAlpha = p.opacity;
+                        ctx.translate(p.x, p.y);
+                        ctx.rotate(p.rotation * Math.PI / 180);
+                        ctx.fillStyle = p.color;
+                        
+                        if (p.shape === 'rect') {{
+                            ctx.fillRect(-p.size / 2, -p.size / 4, p.size, p.size / 2);
+                        }} else {{
+                            ctx.beginPath();
+                            ctx.arc(0, 0, p.size / 2, 0, Math.PI * 2);
+                            ctx.fill();
+                        }}
+                        ctx.restore();
+                    }}
+                    
+                    confettiAnimationId = requestAnimationFrame(render);
+                }}
+                
+                confettiAnimationId = requestAnimationFrame(render);
             }}
+            
+            function stopConfetti() {{
+                if (confettiAnimationId) {{
+                    cancelAnimationFrame(confettiAnimationId);
+                    confettiAnimationId = null;
+                }}
+                const canvas = document.getElementById('confettiCanvas');
+                if (canvas) {{
+                    const ctx = canvas.getContext('2d');
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                    canvas.style.display = 'none';
+                }}
+                window._celebrationShown = false;
+            }}
+            
+            // Stop confetti when song is paused or seeked away from the end
+            audio.addEventListener('pause', stopConfetti);
+            audio.addEventListener('seeked', () => {{
+                const d = audio.duration || 0;
+                if (d > 5 && audio.currentTime < d - 5) {{
+                    stopConfetti();
+                }}
+            }});
         }})();
     </script>
     """
@@ -1661,6 +1848,11 @@ def _artist_match(channel: str, artist: str) -> bool:
     return a in c or c in a or a[:20] in c or c[:20] in a
 
 
+def _song_key(title: str, subtitle: str) -> str:
+    """Unique key for deduplication (title + artist/channel)."""
+    return f"{_normalize_for_match(title)}|{_normalize_for_match(subtitle)}"
+
+
 def get_suggested_songs(
     language: str,
     current_url: str,
@@ -1669,83 +1861,108 @@ def get_suggested_songs(
     mood: str = None,
     channel: str = None,
 ) -> list:
-    """Return similar songs for 'You might also like', ranked by artist > mood > language."""
+    """
+    Suggest songs for 'You might also like'.
+    Priority: relevance (artist > mood > language), then history over curated.
+    Dedupes by song identity; never suggests current song.
+    """
     lang_lower = _normalize_for_match(language)
     mood_lower = _normalize_for_match(mood)
-    channel_norm = _normalize_for_match(channel)
     seen_urls = {current_url}
+    seen_keys = {_song_key(current_title, channel or "")}  # don't suggest current
     candidates = []
 
-    # Curated: same language; score by artist match if we have channel
-    for key, songs in CURATED_SONGS.items():
-        if lang_lower and lang_lower not in key.lower():
-            continue
-        for s in songs:
-            score = 1 if lang_lower else 0
-            reason = "Same language"
-            if channel and _artist_match(channel, s.get("artist", "")):
-                score += 3
-                reason = "Same artist"
-            candidates.append({
-                "title": s["title"],
-                "subtitle": s.get("artist", ""),
-                "query": s["query"],
-                "video_id": s.get("video_id", ""),
-                "type": "curated",
-                "reason": reason,
-                "_score": score,
-                "_url": None,
-            })
-        break
-
-    # History: score by same artist (+3), same mood (+2), same language (+1)
+    # ─── 1. History: user's cached songs, scored by relevance (≤10 min) ───
     try:
-        cached_list = get_cached_songs()
-        for song in cached_list:
+        for song in get_cached_songs():
             url = song.get("url")
-            if not url or url == current_url or song.get("title") == current_title:
+            title = song.get("title", "Unknown")
+            if not url or url == current_url or title == current_title:
                 continue
             if url in seen_urls:
                 continue
+            duration_sec = _parse_duration_to_seconds(song.get("duration"))
+            if duration_sec is not None and duration_sec > MAX_SUGGESTION_DURATION_SEC:
+                continue
             seen_urls.add(url)
+
+            song_lang = _normalize_for_match(str(song.get("language") or ""))
+            song_mood = _normalize_for_match(str(song.get("mood") or ""))
+            song_channel = song.get("channel", "")
+
             score = 0
             reasons = []
-            if channel and _artist_match(channel, song.get("channel", "")):
+            if channel and _artist_match(channel, song_channel):
                 score += 3
                 reasons.append("Same artist")
-            if mood_lower and _normalize_for_match(str(song.get("mood") or "")) == mood_lower:
+            if mood_lower and song_mood == mood_lower:
                 score += 2
                 reasons.append("Same mood")
-            if lang_lower and _normalize_for_match(str(song.get("language") or "")) == lang_lower:
+            if lang_lower and song_lang == lang_lower:
                 score += 1
-                if "Same language" not in reasons:
-                    reasons.append("Same language")
+                reasons.append("Same language")
+
             reason = " · ".join(reasons) if reasons else "From your history"
             candidates.append({
-                "title": song.get("title", "Unknown"),
-                "subtitle": song.get("channel", ""),
+                "title": title,
+                "subtitle": song_channel,
                 "url": url,
                 "cache_key": song.get("cache_key"),
                 "thumbnail": song.get("thumbnail", ""),
                 "type": "history",
                 "reason": reason,
                 "_score": score,
-                "_url": url,
+                "_key": _song_key(title, song_channel),
             })
     except Exception:
         pass
 
-    # Sort by score (desc), then prefer history
+    # ─── 2. Curated: all languages that match (e.g. Spanish + Spanish (Mexico)) ───
+    for key, songs in CURATED_SONGS.items():
+        key_lower = key.lower()
+        if lang_lower and lang_lower not in key_lower:
+            continue
+        for s in songs:
+            title = s.get("title", "")
+            artist = s.get("artist", "")
+            key_id = _song_key(title, artist)
+            if key_id in seen_keys:
+                continue
+            # Don't add curated if we already have this song from history
+            if any(c.get("_key") == key_id for c in candidates):
+                continue
+
+            score = 2 if lang_lower else 0
+            reason = "Same language" if lang_lower else "Curated pick"
+            candidates.append({
+                "title": title,
+                "subtitle": artist,
+                "query": s.get("query", ""),
+                "video_id": s.get("video_id", ""),
+                "type": "curated",
+                "reason": reason,
+                "_score": score,
+                "_key": key_id,
+            })
+    # No break: we now add from every matching language key (e.g. all Spanish variants)
+
+    # ─── 3. Sort: by score (desc), then history before curated ───
     def sort_key(c):
         s = c.get("_score", 0)
-        is_history = c.get("type") == "history"
-        return (-s, 0 if is_history else 1)
+        is_history = 1 if c.get("type") == "history" else 0
+        return (-s, -is_history)  # history first when score ties
 
     candidates.sort(key=sort_key)
+
+    # ─── 4. Take up to max_suggestions, dedupe by _key ───
     out = []
     for c in candidates:
         if len(out) >= max_suggestions:
             break
+        key_id = c.get("_key")
+        if key_id in seen_keys:
+            continue
+        seen_keys.add(key_id)
         item = {k: v for k, v in c.items() if not k.startswith("_")}
         out.append(item)
     return out
