@@ -330,15 +330,79 @@ def search_youtube(query: str, max_results: int = 5) -> list:
         st.error(f"Search failed: {e}")
         return []
 
-def download_audio(url: str, output_dir: str) -> str:
-    """Download audio from YouTube URL with retry on transient failures."""
+COBALT_API_URL = os.getenv("COBALT_API_URL", "https://cobalt-production-b880.up.railway.app")
+
+
+def _download_via_cobalt(url: str, output_dir: str) -> Optional[str]:
+    """
+    Download audio via Cobalt API (fast, no JS runtime needed).
+    Returns file path on success, None on failure.
+    """
+    import time as _time
+    cobalt_url = COBALT_API_URL.rstrip("/")
+
+    for attempt in range(2):
+        try:
+            payload = json.dumps({
+                "url": url,
+                "downloadMode": "audio",
+                "audioFormat": "mp3",
+                "audioBitrate": "128",
+            }).encode("utf-8")
+
+            req = urllib.request.Request(
+                cobalt_url,
+                data=payload,
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+
+            status = data.get("status")
+            download_url = data.get("url")
+
+            if status in ("tunnel", "redirect") and download_url:
+                # Stream the audio file to disk
+                out_path = os.path.join(output_dir, "audio.mp3")
+                dl_req = urllib.request.Request(download_url)
+                with urllib.request.urlopen(dl_req, timeout=120) as stream:
+                    with open(out_path, "wb") as f:
+                        while True:
+                            chunk = stream.read(65536)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+
+                if os.path.exists(out_path) and os.path.getsize(out_path) > 1024:
+                    return out_path
+                # File too small — remove and retry
+                try:
+                    os.remove(out_path)
+                except Exception:
+                    pass
+
+        except Exception:
+            pass
+
+        if attempt < 1:
+            _time.sleep(1)
+
+    return None
+
+
+def _download_via_ytdlp(url: str, output_dir: str) -> Optional[str]:
+    """
+    Download audio via yt-dlp (fallback). Returns file path on success, None on failure.
+    """
     import time as _time
     output_template = os.path.join(output_dir, "audio.%(ext)s")
-    max_retries = 3
-    last_error = ""
 
-    for attempt in range(max_retries):
-        # Clean up any partial downloads from previous attempts
+    for attempt in range(2):
+        # Clean up partial downloads from previous attempts
         if attempt > 0:
             for f in os.listdir(output_dir):
                 if f.startswith("audio."):
@@ -354,29 +418,42 @@ def download_audio(url: str, output_dir: str) -> str:
                 capture_output=True, text=True, timeout=120
             )
 
-            # Find the downloaded file
             for f in os.listdir(output_dir):
                 if f.startswith("audio."):
                     filepath = os.path.join(output_dir, f)
-                    # Validate: file must be non-empty (>1KB to rule out error pages)
                     if os.path.getsize(filepath) > 1024:
                         return filepath
-                    # Too small — likely a corrupt/empty download
-                    last_error = "Downloaded file is too small (possibly corrupt)"
-                    os.remove(filepath)
+                    try:
+                        os.remove(filepath)
+                    except Exception:
+                        pass
                     break
 
-            last_error = result.stderr or "No audio file produced"
+        except Exception:
+            pass
 
-        except subprocess.TimeoutExpired:
-            last_error = "Download timed out after 120 seconds"
-        except Exception as e:
-            last_error = str(e)
+        if attempt < 1:
+            _time.sleep(2)
 
-        if attempt < max_retries - 1:
-            _time.sleep(2 ** attempt)
+    return None
 
-    raise Exception(f"Download failed after {max_retries} attempts: {last_error}")
+
+def download_audio(url: str, output_dir: str) -> str:
+    """
+    Download audio from YouTube URL.
+    Strategy: Cobalt API first (fast, no JS runtime needed), yt-dlp fallback.
+    """
+    # Try Cobalt first — much faster and doesn't need Node.js
+    path = _download_via_cobalt(url, output_dir)
+    if path:
+        return path
+
+    # Fallback to yt-dlp
+    path = _download_via_ytdlp(url, output_dir)
+    if path:
+        return path
+
+    raise Exception("Download failed: both Cobalt API and yt-dlp were unable to fetch the audio.")
 
 # Chunking: process long audio in pieces to avoid timeouts and improve reliability
 CHUNK_DURATION_SEC = 240  # 4 minutes per chunk
