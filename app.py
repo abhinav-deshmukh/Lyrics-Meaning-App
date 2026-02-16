@@ -1769,8 +1769,10 @@ def create_karaoke_player(audio_base64: str, segments: list, audio_format: str =
                 focusOverlay.classList.toggle('show', focusMode);
                 container.style.visibility = focusMode ? 'hidden' : 'visible';
                 focusModeBtn.textContent = focusMode ? 'Exit focus' : 'Focus mode';
-                if (focusMode && currentLineIndex >= 0) {{
-                    updateFocusContent(currentLineIndex);
+                if (focusMode) {{
+                    var wrapper = document.querySelector('.lyrics-wrapper');
+                    if (wrapper) wrapper.scrollTo({{ top: 0, behavior: 'smooth' }});
+                    if (currentLineIndex >= 0) updateFocusContent(currentLineIndex);
                 }}
             }}
             
