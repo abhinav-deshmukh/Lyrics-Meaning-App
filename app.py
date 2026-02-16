@@ -264,10 +264,10 @@ def get_youtube_suggestions(query: str) -> list:
 # Interpretation prompt - optimized for quality translation and cultural context
 INTERPRETATION_PROMPT = """You are a language expert helping users understand song lyrics. For each line below, provide:
 
-1. **original**: The exact text as given
-2. **romanized**: Phonetic pronunciation in Latin script (if the original uses non-Latin script; otherwise leave empty)
-3. **translation**: Natural, poetic English translation that captures the feeling
-4. **meaning**: 1-2 sentences explaining cultural context, idioms, wordplay, or emotional subtext
+1. **original**: The exact text as given (copy it exactly).
+2. **romanized**: Phonetic pronunciation in Latin script (if the original uses non-Latin script; otherwise leave empty).
+3. **translation**: Natural English translation. Always output English. Never copy the original into this field — e.g. "Sabes que ya llevo un rato mirándote" must become "You know I've been watching you for a while", not the Spanish again. For fillers like "Oh" or "Hey" you may repeat the word.
+4. **meaning**: 1-2 sentences explaining cultural context, idioms, wordplay, or emotional subtext (optional for fillers).
 
 Output ONLY a valid JSON array. No markdown, no commentary.
 Format: [{{"original":"...","romanized":"...","translation":"...","meaning":"..."}}]
@@ -642,8 +642,13 @@ def _interpret_batch(texts: list, client, max_retries: int = 3) -> dict:
             for i, text in enumerate(texts):
                 if i < len(interpretations):
                     interp = interpretations[i]
-                    # Only accept entries that have a non-empty translation
-                    if (interp.get('translation') or '').strip():
+                    trans = (interp.get('translation') or '').strip()
+                    orig = (interp.get('original') or text or '').strip()
+                    # Accept only if we have a translation and it's not just the original echoed back
+                    if trans and trans.lower() != orig.lower():
+                        lookup[text.strip().lower()] = interp
+                    # Also accept short fillers (e.g. "Oh", "Hey") where model may reasonably echo
+                    elif trans and len(orig.split()) <= 2 and trans.lower() == orig.lower():
                         lookup[text.strip().lower()] = interp
 
             return lookup
@@ -980,7 +985,7 @@ def create_karaoke_player(audio_base64: str, segments: list, audio_format: str =
         .audio-controls {{
             position: sticky;
             top: 0;
-            z-index: 6;
+            z-index: 10;
             flex-shrink: 0;
             margin-bottom: 4px;
             padding: 8px 4px;
@@ -1684,10 +1689,11 @@ def create_karaoke_player(audio_base64: str, segments: list, audio_format: str =
                         updateFocusContent(newIndex);
                     }}
                     
-                    // Auto-scroll on line change (resets userScrolledAway)
-                    // This is the key insight: resume auto-scroll when a NEW line starts
+                    // Auto-scroll on line change (resets userScrolledAway) — skip when in focus mode so the overlay doesn't move
                     userScrolledAway = false;
-                    scrollToLine(newIndex);
+                    if (!focusMode) {{
+                        scrollToLine(newIndex);
+                    }}
                 }} else {{
                     currentSegmentDisplay.textContent = segments.length > 0 ? 'Press play to start' : 'No lyrics';
                 }}
@@ -2475,6 +2481,46 @@ if has_karaoke:
     
     st.components.v1.html(karaoke_html, height=700, scrolling=False)
     
+    # Download song + Download lyrics + Choose another song (directly below player)
+    st.caption("Download the audio or lyrics, or pick another song.")
+    col_dl, col_lyrics, col_choose = st.columns(3)
+    title = st.session_state.get('selected_title', 'song')
+    safe_name = "".join(c if c.isalnum() or c in " -_" else "_" for c in title)[:80].strip() or "song"
+    with col_dl:
+        ext = "mp3" if data.get("audio_format", "mpeg") == "mpeg" else "webm"
+        file_name_audio = f"{safe_name}.{ext}"
+        audio_bytes = base64.b64decode(data["audio_base64"])
+        mime = "audio/mpeg" if ext == "mp3" else "audio/webm"
+        st.download_button("⬇️ Download song", data=audio_bytes, file_name=file_name_audio, mime=mime, use_container_width=True)
+    with col_lyrics:
+        def _format_lyrics_time(sec):
+            m = int(sec) // 60
+            s = int(sec) % 60
+            return f"{m}:{s:02d}"
+        lines = [f"{data.get('language') or 'Lyrics'} · {data.get('mood') or ''}", f"{title}", ""]
+        for seg in data.get("segments", []):
+            start = seg.get("start", 0)
+            end = seg.get("end", 0)
+            lines.append(f"[{_format_lyrics_time(start)} - {_format_lyrics_time(end)}]")
+            if seg.get("text"):
+                lines.append(f"  {seg['text'].strip()}")
+            if seg.get("romanized", "").strip():
+                lines.append(f"  ({seg['romanized'].strip()})")
+            if seg.get("translation", "").strip():
+                lines.append(f"  → {seg['translation'].strip()}")
+            if seg.get("meaning", "").strip():
+                lines.append(f"  · {seg['meaning'].strip()}")
+            lines.append("")
+        lyrics_content = "\n".join(lines)
+        lyrics_name = f"{safe_name}_lyrics.txt"
+        st.download_button("📄 Download lyrics", data=lyrics_content.encode("utf-8"), file_name=lyrics_name, mime="text/plain; charset=utf-8", use_container_width=True)
+    with col_choose:
+        if st.button("🎶 Choose another song", use_container_width=True):
+            for key in ['selected_url', 'selected_title', 'karaoke_data']:
+                if key in st.session_state:
+                    del st.session_state[key]
+            st.rerun()
+    
     # Suggested next (similar songs)
     suggested = data.get('suggested_songs') or []
     if suggested:
@@ -2522,46 +2568,6 @@ if has_karaoke:
                             st.session_state['_scroll_to_top'] = True
                             st.rerun()
         st.divider()
-    
-    # Download song + Download lyrics + Choose another song
-    st.caption("Done with this one? Download the audio, lyrics, or pick another below.")
-    col_dl, col_lyrics, col_choose = st.columns(3)
-    title = st.session_state.get('selected_title', 'song')
-    safe_name = "".join(c if c.isalnum() or c in " -_" else "_" for c in title)[:80].strip() or "song"
-    with col_dl:
-        ext = "mp3" if data.get("audio_format", "mpeg") == "mpeg" else "webm"
-        file_name_audio = f"{safe_name}.{ext}"
-        audio_bytes = base64.b64decode(data["audio_base64"])
-        mime = "audio/mpeg" if ext == "mp3" else "audio/webm"
-        st.download_button("⬇️ Download song", data=audio_bytes, file_name=file_name_audio, mime=mime, use_container_width=True)
-    with col_lyrics:
-        def _format_lyrics_time(sec):
-            m = int(sec) // 60
-            s = int(sec) % 60
-            return f"{m}:{s:02d}"
-        lines = [f"{data.get('language') or 'Lyrics'} · {data.get('mood') or ''}", f"{title}", ""]
-        for seg in data.get("segments", []):
-            start = seg.get("start", 0)
-            end = seg.get("end", 0)
-            lines.append(f"[{_format_lyrics_time(start)} - {_format_lyrics_time(end)}]")
-            if seg.get("text"):
-                lines.append(f"  {seg['text'].strip()}")
-            if seg.get("romanized", "").strip():
-                lines.append(f"  ({seg['romanized'].strip()})")
-            if seg.get("translation", "").strip():
-                lines.append(f"  → {seg['translation'].strip()}")
-            if seg.get("meaning", "").strip():
-                lines.append(f"  · {seg['meaning'].strip()}")
-            lines.append("")
-        lyrics_content = "\n".join(lines)
-        lyrics_name = f"{safe_name}_lyrics.txt"
-        st.download_button("📄 Download lyrics", data=lyrics_content.encode("utf-8"), file_name=lyrics_name, mime="text/plain; charset=utf-8", use_container_width=True)
-    with col_choose:
-        if st.button("🎶 Choose another song", use_container_width=True):
-            for key in ['selected_url', 'selected_title', 'karaoke_data']:
-                if key in st.session_state:
-                    del st.session_state[key]
-            st.rerun()
 
 st.divider()
 
@@ -2929,31 +2935,6 @@ if not has_karaoke:
                         st.rerun()
     
     if 'selected_url' not in st.session_state:
-        # ── Listening stats badge ──
-        _stats_songs = get_cached_songs()
-        if _stats_songs:
-            _stats_count = len(_stats_songs)
-            _stats_langs = set()
-            _stats_moods = set()
-            for _s in _stats_songs:
-                if _s.get('language'):
-                    _stats_langs.add(_s['language'])
-                if _s.get('mood'):
-                    _stats_moods.add(_s['mood'])
-            _lang_count = len(_stats_langs)
-            _parts = [f"**{_stats_count}** {'song' if _stats_count == 1 else 'songs'} explored"]
-            if _lang_count:
-                _parts.append(f"**{_lang_count}** {'language' if _lang_count == 1 else 'languages'}")
-            if _stats_moods:
-                _parts.append(f"**{len(_stats_moods)}** {'mood' if len(_stats_moods) == 1 else 'moods'}")
-            _stats_text = " · ".join(_parts)
-            st.markdown(f"""
-<div style="background: linear-gradient(135deg, rgba(0,212,255,0.08), rgba(255,215,0,0.08));
-            border: 1px solid rgba(0,212,255,0.15); border-radius: 12px;
-            padding: 12px 20px; margin-bottom: 1rem; text-align: center;">
-    <span style="font-size: 0.95rem;">🎧 {_stats_text}</span>
-</div>""", unsafe_allow_html=True)
-
         # ── "Try it" demo cards ──
         _demo_songs = [
             {"title": "La Vie en Rose", "artist": "Édith Piaf", "lang": "🇫🇷 French",
