@@ -2610,15 +2610,21 @@ with tab1:
             st.markdown("#### No results found")
             st.caption(f"We couldn't find anything for **\"{search_query}\"**. Try a different spelling, add the artist name, or paste a YouTube link below.")
     st.caption("Or paste a YouTube link")
-    youtube_url = st.text_input(
-        "YouTube URL",
-        placeholder="https://www.youtube.com/watch?v=...",
-        key="youtube_url_input",
-        label_visibility="collapsed"
-    )
-    if youtube_url and ("youtube.com" in youtube_url or "youtu.be" in youtube_url):
+    col_url, col_btn = st.columns([5, 1])
+    with col_url:
+        youtube_url = st.text_input(
+            "YouTube URL",
+            placeholder="https://www.youtube.com/watch?v=...",
+            key="youtube_url_input",
+            label_visibility="collapsed"
+        )
+    with col_btn:
+        load_url_clicked = st.button("Load", key="load_youtube_url", type="primary", use_container_width=True)
+    url_stripped = (youtube_url or "").strip()
+    is_youtube = url_stripped and ("youtube.com" in url_stripped or "youtu.be" in url_stripped)
+    if is_youtube and load_url_clicked:
         st.session_state.pop('karaoke_data', None)
-        st.session_state['selected_url'] = youtube_url
+        st.session_state['selected_url'] = url_stripped
         st.session_state['selected_title'] = "YouTube Video"
         st.session_state['auto_process'] = True
         st.session_state['_scroll_to_top'] = True
