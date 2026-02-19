@@ -2000,7 +2000,7 @@ def create_karaoke_player(audio_base64: str, segments: list, audio_format: str =
 # Curated songs for Browse by Language tab (optional video_id for thumbnail)
 CURATED_SONGS = {
     "🇫🇷 French": [
-        {"title": "La Vie en Rose", "artist": "Édith Piaf", "query": "La Vie en Rose Edith Piaf official", "video_id": "sGP3lwDqDtw"},
+        {"title": "La Vie en Rose", "artist": "Édith Piaf", "query": "La Vie en Rose Edith Piaf official", "video_id": "CE5T3s7YPqc"},
         {"title": "Alors on danse", "artist": "Stromae", "query": "Stromae Alors on danse official", "video_id": "VHoT4N43jK8"},
     ],
     "🇪🇸 Spanish": [
@@ -2943,10 +2943,28 @@ if not has_karaoke:
                         st.rerun()
     
     if 'selected_url' not in st.session_state:
+        # ── How it works (compact, black background) ──
+        _hw_steps = [
+            ("🔍", "Search", "Find any song by name or paste a YouTube link"),
+            ("🎤", "Transcribe", "AI listens and detects lyrics + language"),
+            ("🔮", "Interpret", "Get translations, romanization, and cultural meaning"),
+            ("🎶", "Play", "Karaoke mode syncs lyrics as you listen"),
+        ]
+        _hw_html = ""
+        for _icon, _label, _desc in _hw_steps:
+            _hw_html += f'<div style="flex:1;text-align:center;padding:16px 8px;"><div style="font-size:2rem;">{_icon}</div><div style="font-weight:600;font-size:0.95rem;margin:6px 0;">{_label}</div><div style="color:rgba(0,0,0,0.55);font-size:0.82rem;line-height:1.4;">{_desc}</div></div>'
+        st.markdown(
+            f'<div style="background:#f0f2f6;border-radius:14px;padding:24px 16px;margin-bottom:1.5rem;">'
+            f'<div style="text-align:center;margin-bottom:12px;"><div style="font-weight:600;font-size:1.1rem;">How it works</div></div>'
+            f'<div style="display:flex;gap:8px;justify-content:center;">{_hw_html}</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
         # ── "Try it" demo cards ──
         _demo_songs = [
             {"title": "La Vie en Rose", "artist": "Édith Piaf", "lang": "🇫🇷 French",
-             "query": "La Vie en Rose Edith Piaf official", "video_id": "sGP3lwDqDtw",
+             "query": "La Vie en Rose Edith Piaf official", "video_id": "CE5T3s7YPqc",
              "teaser": "\"Quand il me prend dans ses bras\" → \"When he takes me in his arms\" — a 1947 chanson about seeing life through the rose-tinted lens of love."},
             {"title": "Gangnam Style", "artist": "PSY", "lang": "🇰🇷 Korean",
              "query": "PSY Gangnam Style official", "video_id": "9bZkp7q19f0",
@@ -2961,18 +2979,15 @@ if not has_karaoke:
         for _di, _ds in enumerate(_demo_songs):
             with _demo_cols[_di]:
                 _thumb = _youtube_thumbnail_url(_ds["video_id"])
-                st.markdown(f"""
-<div style="border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 12px;
-            background: rgba(255,255,255,0.03); height: 100%;">
-    <img src="{html.escape(_thumb)}" width="100%"
-         style="border-radius: 8px; aspect-ratio: 16/9; object-fit: cover; display: block;" />
-    <div style="margin-top: 10px;">
-        <div style="font-weight: 600; font-size: 0.95rem;">{html.escape(_ds['title'])}</div>
-        <div style="color: rgba(255,255,255,0.5); font-size: 0.8rem;">{html.escape(_ds['artist'])} · {html.escape(_ds['lang'])}</div>
-    </div>
-    <div style="color: rgba(255,255,255,0.55); font-size: 0.8rem; margin-top: 8px; font-style: italic;
-                line-height: 1.4;">{html.escape(_ds['teaser'])}</div>
-</div>""", unsafe_allow_html=True)
+                st.markdown(
+                    f'<div style="border:1px solid rgba(0,0,0,0.08);border-radius:12px;padding:12px;background:#f0f2f6;height:100%;">'
+                    f'<img src="{html.escape(_thumb)}" width="100%" style="border-radius:8px;aspect-ratio:16/9;object-fit:cover;display:block;" />'
+                    f'<div style="margin-top:10px;"><div style="font-weight:600;font-size:0.95rem;">{html.escape(_ds["title"])}</div>'
+                    f'<div style="color:rgba(0,0,0,0.5);font-size:0.8rem;">{html.escape(_ds["artist"])} · {html.escape(_ds["lang"])}</div></div>'
+                    f'<div style="color:rgba(0,0,0,0.55);font-size:0.8rem;margin-top:8px;font-style:italic;line-height:1.4;">{html.escape(_ds["teaser"])}</div>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
                 if st.button(f"▶ Try this", key=f"demo_{_di}", type="primary", use_container_width=True):
                     with st.spinner("Finding video..."):
                         _res = search_youtube(_ds['query'])
@@ -2983,25 +2998,6 @@ if not has_karaoke:
                         st.session_state['auto_process'] = True
                         st.session_state['_scroll_to_top'] = True
                         st.rerun()
-
-        # ── How it works (compact) ──
-        st.markdown("")
-        with st.expander("How it works"):
-            _hw_cols = st.columns(4)
-            _hw_steps = [
-                ("🔍", "Search", "Find any song by name or paste a YouTube link"),
-                ("🎤", "Transcribe", "AI listens and detects lyrics + language"),
-                ("🔮", "Interpret", "Get translations, romanization, and cultural meaning"),
-                ("🎶", "Play", "Karaoke mode syncs lyrics as you listen"),
-            ]
-            for _hi, (_icon, _label, _desc) in enumerate(_hw_steps):
-                with _hw_cols[_hi]:
-                    st.markdown(f"""
-<div style="text-align: center; padding: 8px 4px;">
-    <div style="font-size: 1.8rem;">{_icon}</div>
-    <div style="font-weight: 600; font-size: 0.9rem; margin: 4px 0;">{_label}</div>
-    <div style="color: rgba(255,255,255,0.5); font-size: 0.78rem; line-height: 1.3;">{_desc}</div>
-</div>""", unsafe_allow_html=True)
 
 st.divider()
 st.caption("© 2026 Abhinav Deshmukh · Lyrics and interpretations are AI-generated; use for learning only.")
