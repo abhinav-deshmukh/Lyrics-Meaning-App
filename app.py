@@ -1997,7 +1997,7 @@ def create_karaoke_player(audio_base64: str, segments: list, audio_format: str =
     
     return html
 
-# Curated songs for Browse by Language tab (optional video_id for thumbnail)
+# Curated songs for landing carousel "See what Surasa does" (optional video_id for thumbnail)
 CURATED_SONGS = {
     "🇫🇷 French": [
         {"title": "La Vie en Rose", "artist": "Édith Piaf", "query": "La Vie en Rose Edith Piaf official", "video_id": "CE5T3s7YPqc"},
@@ -2016,36 +2016,36 @@ CURATED_SONGS = {
         {"title": "First Love", "artist": "Hikaru Utada", "query": "Hikaru Utada First Love", "video_id": "gVfR6BsPBpE"},
     ],
     "🇮🇹 Italian": [
-        {"title": "Nel blu dipinto di blu (Volare)", "artist": "Domenico Modugno", "query": "Volare Domenico Modugno official", "video_id": ""},
-        {"title": "Con te partirò", "artist": "Andrea Bocelli", "query": "Con te partiro Andrea Bocelli official", "video_id": ""},
+        {"title": "Nel blu dipinto di blu (Volare)", "artist": "Domenico Modugno", "query": "Volare Domenico Modugno official", "video_id": "v2HKRAtUKNw"},
+        {"title": "Con te partirò", "artist": "Andrea Bocelli", "query": "Con te partiro Andrea Bocelli official", "video_id": "-_B4A2yym8k"},
     ],
     "🇵🇹 Portuguese (Brazil)": [
-        {"title": "Garota de Ipanema", "artist": "Antônio Carlos Jobim", "query": "Garota de Ipanema Jobim official", "video_id": ""},
-        {"title": "Ai se eu te pego", "artist": "Michel Teló", "query": "Ai se eu te pego Michel Telo official", "video_id": ""},
+        {"title": "Garota de Ipanema", "artist": "Antônio Carlos Jobim", "query": "Garota de Ipanema Jobim official", "video_id": "z4mNBMK5oK0"},
+        {"title": "Ai se eu te pego", "artist": "Michel Teló", "query": "Ai se eu te pego Michel Telo official", "video_id": "hcm55lU9knw"},
     ],
     "🇩🇪 German": [
-        {"title": "99 Luftballons", "artist": "Nena", "query": "99 Luftballons Nena official", "video_id": ""},
-        {"title": "Du hast", "artist": "Rammstein", "query": "Rammstein Du hast official", "video_id": ""},
+        {"title": "99 Luftballons", "artist": "Nena", "query": "99 Luftballons Nena official", "video_id": "Fpu5a0Bl8eY"},
+        {"title": "Du hast", "artist": "Rammstein", "query": "Rammstein Du hast official", "video_id": "W3q8Od5qJio"},
     ],
     "🇮🇳 Hindi": [
-        {"title": "Tum Hi Ho", "artist": "Arijit Singh", "query": "Tum Hi Ho Arijit Singh official", "video_id": ""},
-        {"title": "Kesariya", "artist": "Arijit Singh", "query": "Kesariya Brahmastra official", "video_id": ""},
+        {"title": "Tum Hi Ho", "artist": "Arijit Singh", "query": "Tum Hi Ho Arijit Singh official", "video_id": "jr70FnJ4AGU"},
+        {"title": "Kesariya", "artist": "Arijit Singh", "query": "Kesariya Brahmastra official", "video_id": "g6fnFALEseI"},
     ],
     "🇸🇦 Arabic": [
-        {"title": "Habibi", "artist": "Mohamed Ramadan", "query": "Habibi Mohamed Ramadan official", "video_id": ""},
-        {"title": "Enta Eih", "artist": "Nancy Ajram", "query": "Nancy Ajram Enta Eih official", "video_id": ""},
+        {"title": "Habibi", "artist": "Mohamed Ramadan", "query": "Habibi Mohamed Ramadan official", "video_id": "KSqRXbynN2Q"},
+        {"title": "Enta Eih", "artist": "Nancy Ajram", "query": "Nancy Ajram Enta Eih official", "video_id": "Cchy6MEoi6A"},
     ],
     "🇷🇺 Russian": [
-        {"title": "Million Roses", "artist": "Alla Pugacheva", "query": "Million Roses Alla Pugacheva", "video_id": ""},
+        {"title": "Million Roses", "artist": "Alla Pugacheva", "query": "Million Roses Alla Pugacheva", "video_id": "RxtX0u01RqQ"},
         {"title": "Kalinka", "artist": "Traditional", "query": "Kalinka Russian folk official", "video_id": ""},
     ],
     "🇹🇷 Turkish": [
         {"title": "Gibi Gibi", "artist": "Sezen Aksu", "query": "Sezen Aksu Gibi Gibi official", "video_id": ""},
-        {"title": "Düm Tek Tek", "artist": "Hadise", "query": "Dum Tek Tek Hadise Eurovision", "video_id": ""},
+        {"title": "Düm Tek Tek", "artist": "Hadise", "query": "Dum Tek Tek Hadise Eurovision", "video_id": "tJURVrHy1C8"},
     ],
     "🇨🇳 Mandarin Chinese": [
-        {"title": "Tian Mi Mi", "artist": "Teresa Teng", "query": "Tian Mi Mi Teresa Teng official", "video_id": ""},
-        {"title": "Qing Hua Ci", "artist": "Jay Chou", "query": "Qing Hua Ci Jay Chou official", "video_id": ""},
+        {"title": "Tian Mi Mi", "artist": "Teresa Teng", "query": "Tian Mi Mi Teresa Teng official", "video_id": "C_bbCsVFBNE"},
+        {"title": "Qing Hua Ci", "artist": "Jay Chou", "query": "Qing Hua Ci Jay Chou official", "video_id": "nPTFcqhpRlc"},
     ],
     "🇭🇰 Cantonese": [
         {"title": "Beyond the Sea", "artist": "Beyond", "query": "Beyond Hai Kuo Tian Kong official", "video_id": ""},
@@ -2056,23 +2056,23 @@ CURATED_SONGS = {
         {"title": "Dai Yin Mai", "artist": "Palmy", "query": "Palmy Dai Yin Mai official", "video_id": ""},
     ],
     "🇻🇳 Vietnamese": [
-        {"title": "See Tinh", "artist": "Hoang Thuy Linh", "query": "See Tinh Hoang Thuy Linh official", "video_id": ""},
-        {"title": "Ghen", "artist": "Min & Erik", "query": "Ghen Min Erik official", "video_id": ""},
+        {"title": "See Tinh", "artist": "Hoang Thuy Linh", "query": "See Tinh Hoang Thuy Linh official", "video_id": "gZON_LiUvxc"},
+        {"title": "Ghen", "artist": "Min & Erik", "query": "Ghen Min Erik official", "video_id": "QlYNB1NF9VE"},
     ],
     "🇮🇩 Indonesian": [
         {"title": "Kopi Dangdut", "artist": "Fahmi Shahab", "query": "Kopi Dangdut Fahmi Shahab official", "video_id": ""},
-        {"title": "Lathi", "artist": "Weird Genius", "query": "Weird Genius Lathi official", "video_id": ""},
+        {"title": "Lathi", "artist": "Weird Genius", "query": "Weird Genius Lathi official", "video_id": "zkc4JKVn_K8"},
     ],
     "🇵🇭 Tagalog": [
-        {"title": "Buwan", "artist": "Juan Karlos", "query": "Buwan Juan Karlos official", "video_id": ""},
+        {"title": "Buwan", "artist": "Juan Karlos", "query": "Buwan Juan Karlos official", "video_id": "NdCDxZVm42w"},
         {"title": "Hanggang", "artist": "Wency Cornejo", "query": "Hanggang Wency Cornejo official", "video_id": ""},
     ],
     "🇸🇪 Swedish": [
-        {"title": "Dancing Queen", "artist": "ABBA", "query": "ABBA Dancing Queen official", "video_id": ""},
-        {"title": "Euphoria", "artist": "Loreen", "query": "Loreen Euphoria Eurovision official", "video_id": ""},
+        {"title": "Dancing Queen", "artist": "ABBA", "query": "ABBA Dancing Queen official", "video_id": "xFrGuyw1V8s"},
+        {"title": "Euphoria", "artist": "Loreen", "query": "Loreen Euphoria Eurovision official", "video_id": "bcnWysA9gxo"},
     ],
     "🇳🇱 Dutch": [
-        {"title": "Venus", "artist": "Shocking Blue", "query": "Shocking Blue Venus official", "video_id": ""},
+        {"title": "Venus", "artist": "Shocking Blue", "query": "Shocking Blue Venus official", "video_id": "BJ9zSrzIa7k"},
         {"title": "Zoutelande", "artist": "Bløf", "query": "Blof Zoutelande official", "video_id": ""},
     ],
     "🇵🇱 Polish": [
@@ -2085,7 +2085,7 @@ CURATED_SONGS = {
     ],
     "🇮🇱 Hebrew": [
         {"title": "Hallelujah", "artist": "Rita", "query": "Rita Hallelujah Hebrew official", "video_id": ""},
-        {"title": "Diva", "artist": "Dana International", "query": "Dana International Diva Eurovision", "video_id": ""},
+        {"title": "Diva", "artist": "Dana International", "query": "Dana International Diva Eurovision", "video_id": "4No1oClTp_E"},
     ],
     "🇮🇷 Persian (Farsi)": [
         {"title": "Bebakhsh", "artist": "Googoosh", "query": "Googoosh Bebakhsh official", "video_id": ""},
@@ -2096,24 +2096,24 @@ CURATED_SONGS = {
         {"title": "Phire Esho", "artist": "Anupam Roy", "query": "Anupam Roy Phire Esho official", "video_id": ""},
     ],
     "🇮🇳 Tamil": [
-        {"title": "Kolaveri Di", "artist": "Dhanush", "query": "Kolaveri Di Dhanush official", "video_id": ""},
-        {"title": "Jai Ho", "artist": "A.R. Rahman", "query": "Jai Ho Slumdog Millionaire official", "video_id": ""},
+        {"title": "Kolaveri Di", "artist": "Dhanush", "query": "Kolaveri Di Dhanush official", "video_id": "5DK-ZWyxZ8k"},
+        {"title": "Jai Ho", "artist": "A.R. Rahman", "query": "Jai Ho Slumdog Millionaire official", "video_id": "xwwAVRyNmgQ"},
     ],
     "🇮🇳 Telugu": [
-        {"title": "Naatu Naatu", "artist": "Rahul Sipligunj", "query": "Naatu Naatu RRR official", "video_id": ""},
+        {"title": "Naatu Naatu", "artist": "Rahul Sipligunj", "query": "Naatu Naatu RRR official", "video_id": "OsU0CGZoV8E"},
         {"title": "Bahubali", "artist": "M.M. Keeravani", "query": "Bahubali theme song official", "video_id": ""},
     ],
     "🇮🇳 Punjabi": [
-        {"title": "Lemonade", "artist": "Diljit Dosanjh", "query": "Lemonade Diljit Dosanjh official", "video_id": ""},
-        {"title": "High Rated Gabru", "artist": "Guru Randhawa", "query": "High Rated Gabru Guru Randhawa official", "video_id": ""},
+        {"title": "Lemonade", "artist": "Diljit Dosanjh", "query": "Lemonade Diljit Dosanjh official", "video_id": "Sb9SsxBPBEU"},
+        {"title": "High Rated Gabru", "artist": "Guru Randhawa", "query": "High Rated Gabru Guru Randhawa official", "video_id": "gzN5oGGo2vw"},
     ],
     "🇺🇦 Ukrainian": [
-        {"title": "Stefania", "artist": "Kalush Orchestra", "query": "Stefania Kalush Eurovision official", "video_id": ""},
-        {"title": "Chervona Ruta", "artist": "Sofia Rotaru", "query": "Chervona Ruta Sofia Rotaru", "video_id": ""},
+        {"title": "Stefania", "artist": "Kalush Orchestra", "query": "Stefania Kalush Eurovision official", "video_id": "lCerjLF8jlA"},
+        {"title": "Chervona Ruta", "artist": "Sofia Rotaru", "query": "Chervona Ruta Sofia Rotaru", "video_id": "9OawC57_pjs"},
     ],
     "🇷🇴 Romanian": [
-        {"title": "Dragostea din tei", "artist": "O-Zone", "query": "Dragostea din tei O-Zone official", "video_id": ""},
-        {"title": "Stereo Love", "artist": "Edward Maya", "query": "Edward Maya Stereo Love official", "video_id": ""},
+        {"title": "Dragostea din tei", "artist": "O-Zone", "query": "Dragostea din tei O-Zone official", "video_id": "8sl6fAllTfs"},
+        {"title": "Stereo Love", "artist": "Edward Maya", "query": "Edward Maya Stereo Love official", "video_id": "p-Z3YrHJ1sU"},
     ],
     "🇭🇺 Hungarian": [
         {"title": "Gloomy Sunday", "artist": "Rezső Seress", "query": "Gloomy Sunday Hungarian official", "video_id": ""},
@@ -2124,16 +2124,16 @@ CURATED_SONGS = {
         {"title": "Láska", "artist": "Lucie", "query": "Lucie Laska official", "video_id": ""},
     ],
     "🇳🇴 Norwegian": [
-        {"title": "Fairytale", "artist": "Alexander Rybak", "query": "Alexander Rybak Fairytale Eurovision", "video_id": ""},
-        {"title": "Take On Me", "artist": "a-ha", "query": "a-ha Take On Me official", "video_id": ""},
+        {"title": "Fairytale", "artist": "Alexander Rybak", "query": "Alexander Rybak Fairytale Eurovision", "video_id": "WXwgZL4zx9o"},
+        {"title": "Take On Me", "artist": "a-ha", "query": "a-ha Take On Me official", "video_id": "djV11Xbc914"},
     ],
     "🇩🇰 Danish": [
         {"title": "Only Teardrops", "artist": "Emmelie de Forest", "query": "Only Teardrops Eurovision Denmark", "video_id": ""},
         {"title": "Smuk som et stjerneskud", "artist": "Medina", "query": "Medina Smuk som et stjerneskud", "video_id": ""},
     ],
     "🇫🇮 Finnish": [
-        {"title": "Hard Rock Hallelujah", "artist": "Lordi", "query": "Lordi Hard Rock Hallelujah Eurovision", "video_id": ""},
-        {"title": "Sandstorm", "artist": "Darude", "query": "Darude Sandstorm official", "video_id": ""},
+        {"title": "Hard Rock Hallelujah", "artist": "Lordi", "query": "Lordi Hard Rock Hallelujah Eurovision", "video_id": "Njaju0owhbY"},
+        {"title": "Sandstorm", "artist": "Darude", "query": "Darude Sandstorm official", "video_id": "erb4n8PW2qw"},
     ],
     "🇲🇾 Malay": [
         {"title": "Bila Tiba Masanya", "artist": "Siti Nurhaliza", "query": "Siti Nurhaliza Bila Tiba Masanya", "video_id": ""},
@@ -2160,8 +2160,8 @@ CURATED_SONGS = {
         {"title": "El cant dels ocells", "artist": "Pau Casals", "query": "El cant dels ocells Pau Casals", "video_id": ""},
     ],
     "🇵🇹 Portuguese (Portugal)": [
-        {"title": "Fado Português", "artist": "Amália Rodrigues", "query": "Amalia Rodrigues Fado official", "video_id": ""},
-        {"title": "Amar pelos dois", "artist": "Salvador Sobral", "query": "Amar pelos dois Eurovision Portugal", "video_id": ""},
+        {"title": "Fado Português", "artist": "Amália Rodrigues", "query": "Amalia Rodrigues Fado official", "video_id": "ARS7Zi-Zpkw"},
+        {"title": "Amar pelos dois", "artist": "Salvador Sobral", "query": "Amar pelos dois Eurovision Portugal", "video_id": "Qotooj7ODCM"},
     ],
     "🇬🇪 Georgian": [
         {"title": "Suliko", "artist": "Traditional", "query": "Suliko Georgian folk", "video_id": ""},
@@ -2177,7 +2177,7 @@ CURATED_SONGS = {
     ],
     "🇪🇬 Egyptian Arabic": [
         {"title": "El Bint el Shalabeya", "artist": "Mohamed Mounir", "query": "Mohamed Mounir El Bint el Shalabeya", "video_id": ""},
-        {"title": "Habibi ya nour el ain", "artist": "Amr Diab", "query": "Amr Diab Habibi ya nour el ain", "video_id": ""},
+        {"title": "Habibi ya nour el ain", "artist": "Amr Diab", "query": "Amr Diab Habibi ya nour el ain", "video_id": "0Ma7ir9nwrY"},
     ],
     "🇲🇽 Spanish (Mexico)": [
         {"title": "Cielito Lindo", "artist": "Traditional", "query": "Cielito Lindo Mexican official", "video_id": ""},
@@ -2573,8 +2573,8 @@ if has_karaoke:
 
 st.divider()
 
-# Tabs: always visible so user can search/browse/history while song plays or before
-tab1, tab2, tab3 = st.tabs(["🔍 Search", "🌍 Browse", "📜 History"])
+# Tabs: Search and History (curated songs are on the landing carousel)
+tab1, tab2 = st.tabs(["🔍 Search", "📜 History"])
 
 with tab1:
     search_query = st_searchbox(
@@ -2631,49 +2631,6 @@ with tab1:
         st.rerun()
 
 with tab2:
-    all_languages = list(CURATED_SONGS.keys())
-    filter_options = ["All languages"] + all_languages
-    selected = st.selectbox(
-        "Language",
-        options=filter_options,
-        key="browse_language_filter"
-    )
-    if selected == "All languages":
-        languages_to_show = all_languages
-    else:
-        languages_to_show = [selected]
-    for lang in languages_to_show:
-        if lang not in CURATED_SONGS:
-            continue
-        songs = CURATED_SONGS[lang]
-        st.markdown(f"**Songs in {lang}**")
-        for j, s in enumerate(songs):
-            thumb_url = _youtube_thumbnail_url(s.get("video_id", "")) if s.get("video_id") else ""
-            col_thumb, col_info, col_btn = st.columns([1, 4, 1])
-            with col_thumb:
-                if thumb_url:
-                    st.markdown(f'<img src="{html.escape(thumb_url)}" width="120" style="border-radius: 8px; max-width: 100%; display: block;" />', unsafe_allow_html=True)
-                else:
-                    st.markdown("<div style='height:90px;'></div>", unsafe_allow_html=True)
-            with col_info:
-                st.markdown(f"{s['title']} — *{s['artist']}*")
-            with col_btn:
-                if st.button("▶ Play", key=f"browse_{lang}_{j}", type="primary", help="Play this song"):
-                    with st.spinner("Finding video..."):
-                        res = search_youtube(s['query'])
-                    if res:
-                        st.session_state.pop('karaoke_data', None)
-                        st.session_state['selected_url'] = res[0]['url']
-                        st.session_state['selected_title'] = res[0]['title']
-                        st.session_state['auto_process'] = True
-                        st.session_state['_scroll_to_top'] = True
-                        st.rerun()
-                    else:
-                        st.error("Could not find a video for this song.")
-            st.divider()
-            st.markdown("<div style='margin-bottom: 1rem;'></div>", unsafe_allow_html=True)
-
-with tab3:
     cached_songs = get_cached_songs()
     if st.session_state.get("confirm_clear_history"):
         st.warning("Clear all history? This will remove every song from this list. You can still search and play them again (they’ll be processed again).")
@@ -2703,7 +2660,7 @@ with tab3:
     <div style="font-size: 1.1rem; font-weight: 600; margin-bottom: 0.5rem;">Your listening history will appear here</div>
     <div style="color: rgba(255,255,255,0.6); font-size: 0.9rem; max-width: 360px; margin: 0 auto;">
         Every song you play is saved for instant replay.<br>
-        Head to <b>Search</b> or <b>Browse</b> to get started!
+        Head to <b>Search</b> or pick a song from the carousel above to get started!
     </div>
 </div>
 """, unsafe_allow_html=True)
@@ -2961,43 +2918,64 @@ if not has_karaoke:
             unsafe_allow_html=True,
         )
 
-        # ── "Try it" demo cards ──
-        _demo_songs = [
-            {"title": "La Vie en Rose", "artist": "Édith Piaf", "lang": "🇫🇷 French",
-             "query": "La Vie en Rose Edith Piaf official", "video_id": "CE5T3s7YPqc",
-             "teaser": "\"Quand il me prend dans ses bras\" → \"When he takes me in his arms\" — a 1947 chanson about seeing life through the rose-tinted lens of love."},
-            {"title": "Gangnam Style", "artist": "PSY", "lang": "🇰🇷 Korean",
-             "query": "PSY Gangnam Style official", "video_id": "9bZkp7q19f0",
-             "teaser": "\"오빤 강남스타일\" → \"Oppa is Gangnam Style\" — a satirical take on Seoul's flashy Gangnam district and its culture of appearances."},
-            {"title": "Despacito", "artist": "Luis Fonsi", "lang": "🇪🇸 Spanish",
-             "query": "Despacito Luis Fonsi official video", "video_id": "kJQP7kiw5Fk",
-             "teaser": "\"Quiero respirar tu cuello despacito\" → \"I want to breathe your neck slowly\" — a reggaeton love song blending Puerto Rican slang with poetic seduction."},
-        ]
-        st.markdown("#### See what Surasa does")
-        st.caption("Pick a song to experience AI-powered lyrics, translations, and cultural context")
-        _demo_cols = st.columns(len(_demo_songs))
-        for _di, _ds in enumerate(_demo_songs):
-            with _demo_cols[_di]:
-                _thumb = _youtube_thumbnail_url(_ds["video_id"])
-                st.markdown(
-                    f'<div style="border:1px solid rgba(0,0,0,0.08);border-radius:12px;padding:12px;background:#f0f2f6;height:100%;">'
-                    f'<img src="{html.escape(_thumb)}" width="100%" style="border-radius:8px;aspect-ratio:16/9;object-fit:cover;display:block;" />'
-                    f'<div style="margin-top:10px;"><div style="font-weight:600;font-size:0.95rem;">{html.escape(_ds["title"])}</div>'
-                    f'<div style="color:rgba(0,0,0,0.5);font-size:0.8rem;">{html.escape(_ds["artist"])} · {html.escape(_ds["lang"])}</div></div>'
-                    f'<div style="color:rgba(0,0,0,0.55);font-size:0.8rem;margin-top:8px;font-style:italic;line-height:1.4;">{html.escape(_ds["teaser"])}</div>'
-                    f'</div>',
-                    unsafe_allow_html=True,
-                )
-                if st.button(f"▶ Try this", key=f"demo_{_di}", type="primary", use_container_width=True):
+        # ── "Try it" demo carousel (all curated songs) ──
+        _demo_songs_flat = []
+        for _lang, _songs in CURATED_SONGS.items():
+            for _s in _songs:
+                _demo_songs_flat.append({**_s, "lang": _lang})
+        _try_idx = None
+        try:
+            _try_idx = st.query_params.get("try")
+        except Exception:
+            pass
+        if _try_idx is not None:
+            try:
+                _idx = int(_try_idx)
+                if 0 <= _idx < len(_demo_songs_flat):
+                    _ds = _demo_songs_flat[_idx]
                     with st.spinner("Finding video..."):
-                        _res = search_youtube(_ds['query'])
+                        _res = search_youtube(_ds["query"])
                     if _res:
-                        st.session_state.pop('karaoke_data', None)
-                        st.session_state['selected_url'] = _res[0]['url']
-                        st.session_state['selected_title'] = _res[0]['title']
-                        st.session_state['auto_process'] = True
-                        st.session_state['_scroll_to_top'] = True
+                        st.session_state.pop("karaoke_data", None)
+                        st.session_state["selected_url"] = _res[0]["url"]
+                        st.session_state["selected_title"] = _res[0]["title"]
+                        st.session_state["auto_process"] = True
+                        st.session_state["_scroll_to_top"] = True
+                        try:
+                            del st.query_params["try"]
+                        except Exception:
+                            pass
                         st.rerun()
+            except (ValueError, TypeError):
+                pass
+        st.markdown("#### See what Surasa does")
+        st.caption("Pick a song to experience AI-powered lyrics, translations, and cultural context. Scroll for more.")
+        _cards_html = []
+        for _di, _ds in enumerate(_demo_songs_flat):
+            _vid = _ds.get("video_id") or ""
+            _thumb = _youtube_thumbnail_url(_vid) if _vid else ""
+            if _thumb:
+                _img = f'<img src="{html.escape(_thumb)}" alt="" style="width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:8px;display:block;" />'
+            else:
+                _flag = (_ds.get("lang") or "🎵").split(" ")[0]
+                _img = f'<div style="width:100%;aspect-ratio:16/9;border-radius:8px;background:linear-gradient(135deg,#667eea,#764ba2);display:flex;align-items:center;justify-content:center;font-size:2rem;">{_flag}</div>'
+            _cards_html.append(
+                f'<div class="surasa-demo-card" style="flex:0 0 200px;min-width:200px;">'
+                f'<a href="?try={_di}" target="_top" style="text-decoration:none;color:inherit;display:block;border:1px solid rgba(0,0,0,0.08);border-radius:12px;padding:10px;background:#f0f2f6;height:100%;">'
+                f'{_img}'
+                f'<div style="margin-top:8px;"><div style="font-weight:600;font-size:0.9rem;">{html.escape(_ds["title"])}</div>'
+                f'<div style="color:rgba(0,0,0,0.5);font-size:0.78rem;">{html.escape(_ds["artist"])} · {html.escape(_ds["lang"])}</div></div>'
+                f'<div style="margin-top:8px;font-size:0.75rem;color:rgba(0,0,0,0.65);">▶ Try this</div>'
+                f'</a></div>'
+            )
+        _carousel_html = f"""
+<div style="overflow-x:auto;overflow-y:hidden;padding:8px 0;margin:-8px 0;-webkit-overflow-scrolling:touch;">
+<div style="display:flex;gap:12px;min-height:1px;">
+{''.join(_cards_html)}
+</div>
+</div>
+"""
+        st.markdown(_carousel_html, unsafe_allow_html=True)
 
 st.divider()
 st.caption("© 2026 Abhinav Deshmukh · Lyrics and interpretations are AI-generated; use for learning only.")
