@@ -370,6 +370,7 @@ def _download_via_cobalt(url: str, output_dir: str) -> Optional[str]:
     import time as _time
     cobalt_url = COBALT_API_URL.rstrip("/")
 
+    last_error = None
     for attempt in range(2):
         try:
             payload = json.dumps({
@@ -395,7 +396,6 @@ def _download_via_cobalt(url: str, output_dir: str) -> Optional[str]:
             download_url = data.get("url")
 
             if status in ("tunnel", "redirect") and download_url:
-                # Stream the audio file to disk
                 out_path = os.path.join(output_dir, "audio.mp3")
                 dl_req = urllib.request.Request(download_url)
                 with urllib.request.urlopen(dl_req, timeout=120) as stream:
@@ -408,18 +408,21 @@ def _download_via_cobalt(url: str, output_dir: str) -> Optional[str]:
 
                 if os.path.exists(out_path) and os.path.getsize(out_path) > 1024:
                     return out_path
-                # File too small — remove and retry
                 try:
                     os.remove(out_path)
                 except Exception:
                     pass
+                last_error = f"status={status} but file too small"
+            else:
+                last_error = f"unexpected status={status}, url={'yes' if download_url else 'no'}, body={str(data)[:120]}"
 
-        except Exception:
-            pass
+        except Exception as e:
+            last_error = str(e)[:200]
 
         if attempt < 1:
             _time.sleep(1)
 
+    print(f"[Cobalt] FAILED after 2 attempts. Last error: {last_error}. Cobalt URL: {cobalt_url}")
     return None
 
 
@@ -430,8 +433,8 @@ def _download_via_ytdlp(url: str, output_dir: str) -> Optional[str]:
     import time as _time
     output_template = os.path.join(output_dir, "audio.%(ext)s")
 
+    last_error = None
     for attempt in range(2):
-        # Clean up partial downloads from previous attempts
         if attempt > 0:
             for f in os.listdir(output_dir):
                 if f.startswith("audio."):
@@ -447,6 +450,9 @@ def _download_via_ytdlp(url: str, output_dir: str) -> Optional[str]:
                 capture_output=True, text=True, timeout=120
             )
 
+            if result.returncode != 0:
+                last_error = f"exit={result.returncode}, stderr={result.stderr[:300]}"
+
             for f in os.listdir(output_dir):
                 if f.startswith("audio."):
                     filepath = os.path.join(output_dir, f)
@@ -456,14 +462,17 @@ def _download_via_ytdlp(url: str, output_dir: str) -> Optional[str]:
                         os.remove(filepath)
                     except Exception:
                         pass
+                    if not last_error:
+                        last_error = "output file too small"
                     break
 
-        except Exception:
-            pass
+        except Exception as e:
+            last_error = str(e)[:200]
 
         if attempt < 1:
             _time.sleep(2)
 
+    print(f"[yt-dlp] FAILED after 2 attempts. Last error: {last_error}")
     return None
 
 
@@ -482,7 +491,10 @@ def download_audio(url: str, output_dir: str) -> str:
     if path:
         return path
 
-    raise Exception("Download failed: both Cobalt API and yt-dlp were unable to fetch the audio.")
+    raise Exception(
+        "Download failed: both Cobalt API and yt-dlp were unable to fetch the audio. "
+        "Check Railway logs for [Cobalt] and [yt-dlp] error details."
+    )
 
 # Chunking: process long audio in pieces to avoid timeouts and improve reliability
 CHUNK_DURATION_SEC = 240  # 4 minutes per chunk
