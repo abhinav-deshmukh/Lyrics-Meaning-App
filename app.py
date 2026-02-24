@@ -166,17 +166,18 @@ def _parse_duration_to_seconds(duration_val) -> Optional[int]:
 
 
 def save_to_cache(url: str, language: str, data: dict, title: str = None):
-    """Save processed song to cache with metadata for history."""
+    """Save processed song to cache with metadata for history.
+    Channel and duration are left for get_cached_songs() to backfill from YouTube when needed (avoids blocking on yt-dlp here).
+    """
     import time
     data = dict(data)
-    metadata = _get_youtube_metadata(url)
     data['_meta'] = {
         'url': url,
         'title': title or 'Unknown',
         'cached_at': time.strftime('%Y-%m-%d %H:%M'),
         'thumbnail': _youtube_thumbnail_url(_video_id_from_url(url)),
-        'channel': metadata.get('channel', 'Unknown'),
-        'duration': metadata.get('duration', ''),
+        'channel': 'Unknown',
+        'duration': '',
         'language': data.get('language'),
         'mood': data.get('mood'),
     }
@@ -269,12 +270,40 @@ INTERPRETATION_PROMPT = """You are a language expert helping users understand so
 3. **translation**: Natural English translation. Always output English. Never copy the original into this field — e.g. "Sabes que ya llevo un rato mirándote" must become "You know I've been watching you for a while", not the Spanish again. For fillers like "Oh" or "Hey" you may repeat the word.
 4. **meaning**: 1-2 sentences explaining cultural context, idioms, wordplay, or emotional subtext (optional for fillers).
 
-Output ONLY a valid JSON array. No markdown, no commentary.
+Output exactly one JSON object per line, in the same order as the input. No extra keys or commentary. Only a valid JSON array.
 Format: [{{"original":"...","romanized":"...","translation":"...","meaning":"..."}}]
-
+{language_line}
 Lines to interpret:
 {segments}
 """
+# Optional line injected when language is known (e.g. "The lyrics are in: Spanish.")
+INTERPRETATION_PROMPT_LANGUAGE_LINE = "The lyrics are in: {language}."
+# When source is not English, insist on English-only translation (avoids model echoing original).
+INTERPRETATION_PROMPT_TRANSLATE_LINE = "Translate every line to English in the 'translation' field; do not copy the original text into translation."
+
+# Whisper returns ISO 639-1 codes (e.g. 'es', 'ko'). Map to readable names for the prompt.
+_WHISPER_LANG_TO_DISPLAY = {
+    "es": "Spanish", "en": "English", "ko": "Korean", "ja": "Japanese", "fr": "French",
+    "de": "German", "pt": "Portuguese", "it": "Italian", "ru": "Russian", "hi": "Hindi",
+    "ar": "Arabic", "zh": "Chinese", "th": "Thai", "vi": "Vietnamese", "id": "Indonesian",
+    "tr": "Turkish", "pl": "Polish", "nl": "Dutch", "sv": "Swedish", "el": "Greek",
+    "he": "Hebrew", "fa": "Persian", "uk": "Ukrainian", "ro": "Romanian", "hu": "Hungarian",
+}
+
+
+def _format_interpretation_prompt(segments_text: str, language_hint: str = None, insist_english: bool = False) -> str:
+    """Build interpretation prompt with optional language hint (Whisper code or display name)."""
+    language_line = ""
+    if language_hint:
+        try:
+            display = _WHISPER_LANG_TO_DISPLAY.get(language_hint.strip().lower(), language_hint)
+            language_line = "\n" + INTERPRETATION_PROMPT_LANGUAGE_LINE.format(language=display) + "\n\n"
+            # For non-English lyrics, insist on English-only translation to avoid model echoing original
+            if insist_english or (language_hint.strip().lower() != "en"):
+                language_line += INTERPRETATION_PROMPT_TRANSLATE_LINE + "\n\n"
+        except Exception:
+            pass
+    return INTERPRETATION_PROMPT.format(segments=segments_text, language_line=language_line)
 
 def _youtube_thumbnail_url(video_id: str) -> str:
     """Standard YouTube thumbnail URL (mqdefault = 320x180)."""
@@ -491,14 +520,21 @@ def _split_audio_into_chunks(audio_path: str) -> list:
     except Exception:
         return [(audio_path, 0.0)]
 
-def _transcribe_one_file(audio_path: str, language: str, client) -> list:
-    """Single-file transcription (used by transcribe_with_timestamps)."""
+# Phrases Whisper sometimes echoes as hallucination (e.g. when prompt was used). Replace with ♪.
+_KNOWN_HALLUCINATION_PHRASES = (
+    "Lyrics of a song. Transcribe the singing. May be in any language.",
+    "Lyrics of a song. Transcribe the singing. May be any language.",
+)
+
+
+def _transcribe_one_file(audio_path: str, language: str, client) -> tuple:
+    """Single-file transcription. Returns (segments, detected_language or None)."""
     with open(audio_path, "rb") as audio_file:
         params = {
             "model": "whisper-1",
             "file": audio_file,
             "response_format": "verbose_json",
-            "timestamp_granularities": ["segment"]
+            "timestamp_granularities": ["segment"],
         }
         if language and language != "auto":
             params["language"] = language
@@ -510,36 +546,67 @@ def _transcribe_one_file(audio_path: str, language: str, client) -> list:
             'end': seg.end,
             'text': seg.text.strip()
         })
-    return segments
+    detected_lang = getattr(transcript, 'language', None) or None
+    return (segments, detected_lang)
 
 
-def _transcribe_chunk_with_retry(chunk_path: str, offset_sec: float, language: str, client, max_retries: int = 3) -> list:
-    """Transcribe a single chunk with per-chunk retry. Returns segments with offsets applied."""
+def _transcribe_chunk_with_retry(chunk_path: str, offset_sec: float, language: str, client, max_retries: int = 3) -> tuple:
+    """Transcribe a single chunk with per-chunk retry. Returns (segments with offsets applied, detected_language or None)."""
     import time
     for attempt in range(max_retries):
         try:
-            segs = _transcribe_one_file(chunk_path, language, client)
-            return [{'start': s['start'] + offset_sec, 'end': s['end'] + offset_sec, 'text': s['text']} for s in segs]
+            segs, detected_lang = _transcribe_one_file(chunk_path, language, client)
+            out = [{'start': s['start'] + offset_sec, 'end': s['end'] + offset_sec, 'text': s['text']} for s in segs]
+            return (out, detected_lang)
         except Exception:
             if attempt < max_retries - 1:
                 time.sleep(2 ** attempt)
                 continue
-            # Permanent failure for this chunk — return empty (graceful partial)
-            return []
+            return ([], None)
 
 
-def transcribe_with_timestamps(audio_path: str, language: str = None) -> list:
+def _is_hallucinated_segment(seg: dict) -> bool:
+    """Check if a segment looks like a Whisper hallucination (known phrases, very short repeated, etc.)."""
+    text = (seg.get("text") or "").strip()
+    if not text:
+        return True
+    if text in _KNOWN_HALLUCINATION_PHRASES:
+        return True
+    if text == "♪":
+        return True
+    return False
+
+
+def _chunk_looks_hallucinated(chunk_segments: list) -> bool:
+    """True if a chunk's segments are mostly hallucinated or have repeated short text."""
+    if not chunk_segments:
+        return True
+    hallucinated = sum(1 for s in chunk_segments if _is_hallucinated_segment(s))
+    if hallucinated >= len(chunk_segments) * 0.5:
+        return True
+    # Check for repeated short text (sign of hallucination on silence/music)
+    texts = [(s.get("text") or "").strip().lower() for s in chunk_segments if (s.get("text") or "").strip()]
+    if texts:
+        from collections import Counter
+        counts = Counter(texts)
+        most_common_text, most_common_count = counts.most_common(1)[0]
+        if most_common_count >= 3 and len(most_common_text) < 60:
+            return True
+    return False
+
+
+def transcribe_with_timestamps(audio_path: str, language: str = None) -> tuple:
     """
-    Transcribe audio with timestamps.
-    - Splits long audio into chunks
-    - Retries each chunk independently (up to 3 times)
-    - If some chunks fail, returns partial results from successful chunks
-    - After all chunks, validates overall result; retries whole pipeline once if empty
+    Transcribe audio with timestamps (two-pass for quality).
+    Pass 1: Transcribe all chunks in parallel without language hint.
+    Pass 2: If we detected a language AND some chunks look hallucinated, re-transcribe
+             those chunks with the detected language as a hint. This recovers lyrics
+             that Whisper missed (e.g. devotional songs with heavy background music).
     """
     import time
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     client = OpenAI()
     chunks = _split_audio_into_chunks(audio_path)
-    tmp_dir = os.path.dirname(audio_path)
     created_chunk_files = [p for p, _ in chunks if p != audio_path]
 
     def _cleanup():
@@ -550,34 +617,74 @@ def transcribe_with_timestamps(audio_path: str, language: str = None) -> list:
             except Exception:
                 pass
 
-    # Transcribe each chunk with independent retry
+    # ── Pass 1: transcribe all chunks in parallel (no language hint) ──
+    chunk_results = {}  # {(path, offset): (segments, lang)}
+    detected_language = None
+    max_workers = min(len(chunks), 4)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(_transcribe_chunk_with_retry, path, off, language, client): (path, off)
+            for path, off in chunks
+        }
+        for fut in as_completed(futures):
+            key = futures[fut]
+            segs, lang = fut.result()
+            chunk_results[key] = (segs, lang)
+            if lang and detected_language is None:
+                detected_language = lang
+
+    # ── Pass 2: re-transcribe hallucinated chunks with language hint ──
+    if detected_language and not language:
+        retranscribe_keys = []
+        for key in chunks:
+            segs, _ = chunk_results.get(key, ([], None))
+            if _chunk_looks_hallucinated(segs):
+                retranscribe_keys.append(key)
+
+        if retranscribe_keys and len(retranscribe_keys) < len(chunks):
+            with ThreadPoolExecutor(max_workers=min(len(retranscribe_keys), 4)) as executor:
+                futures = {
+                    executor.submit(_transcribe_chunk_with_retry, path, off, detected_language, client): (path, off)
+                    for path, off in retranscribe_keys
+                }
+                for fut in as_completed(futures):
+                    key = futures[fut]
+                    new_segs, new_lang = fut.result()
+                    old_segs, _ = chunk_results[key]
+                    # Use new result if it has more real content
+                    if new_segs and not _chunk_looks_hallucinated(new_segs):
+                        chunk_results[key] = (new_segs, new_lang or detected_language)
+
+    # ── Merge all chunk results ──
     all_segments = []
-    failed_chunks = 0
-    for chunk_path, offset_sec in chunks:
-        segs = _transcribe_chunk_with_retry(chunk_path, offset_sec, language, client)
+    for key in chunks:
+        segs, _ = chunk_results.get(key, ([], None))
         if segs:
             all_segments.extend(segs)
-        else:
-            failed_chunks += 1
-
     all_segments.sort(key=lambda x: x['start'])
 
-    # Quality check: if ALL chunks failed or result is trivially short, retry entire pipeline once
+    # Quality check: if everything is empty/short, one full retry
     text_segments = [s for s in all_segments if s['text'].strip()]
     total_text = ' '.join(s['text'] for s in text_segments).strip() if text_segments else ''
-
     if not text_segments or len(total_text) < 20:
         time.sleep(2)
-        # One full retry of all chunks
         all_segments = []
-        for chunk_path, offset_sec in chunks:
-            segs = _transcribe_chunk_with_retry(chunk_path, offset_sec, language, client)
-            if segs:
-                all_segments.extend(segs)
+        detected_language = None
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(_transcribe_chunk_with_retry, path, off, language, client): (path, off)
+                for path, off in chunks
+            }
+            for fut in as_completed(futures):
+                segs, lang = fut.result()
+                if segs:
+                    all_segments.extend(segs)
+                if lang and detected_language is None:
+                    detected_language = lang
         all_segments.sort(key=lambda x: x['start'])
 
     _cleanup()
-    return all_segments
+    return (all_segments, detected_language)
 
 
 INTERPRETATION_BATCH_SIZE = 25  # Lines per API call — prevents max_tokens truncation
@@ -616,11 +723,12 @@ def _extract_json_array(response_text: str) -> list:
     return json.loads(json_text)
 
 
-def _interpret_batch(texts: list, client, max_retries: int = 3) -> dict:
+def _interpret_batch(texts: list, client, language_hint: str = None, max_retries: int = 3) -> dict:
     """
     Interpret a batch of unique lyric lines. Returns dict {text_lower: interp_dict}.
-    Retries on network errors and JSON parse failures independently.
-    On permanent failure, returns empty dict (never raises).
+    Retries on network errors and JSON parse failures. If the model echoes the original
+    in the translation field (common for Spanish etc.), retries once with a stronger
+    English-only instruction.
     """
     import time
     if not texts:
@@ -628,56 +736,85 @@ def _interpret_batch(texts: list, client, max_retries: int = 3) -> dict:
 
     segments_text = "\n".join([f"{i+1}. {t}" for i, t in enumerate(texts)])
 
+    def _parse_batch_result(texts_list, interpretations, accept_echo_fillers: bool = True) -> dict:
+        lookup = {}
+        for i, text in enumerate(texts_list):
+            if i < len(interpretations):
+                interp = interpretations[i]
+                trans = (interp.get('translation') or '').strip()
+                orig = (interp.get('original') or text or '').strip()
+                if trans and trans.lower() != orig.lower():
+                    lookup[text.strip().lower()] = interp
+                elif accept_echo_fillers and trans and len(orig.split()) <= 2 and trans.lower() == orig.lower():
+                    lookup[text.strip().lower()] = interp
+        return lookup
+
+    def _echo_ratio(texts_list, interpretations) -> float:
+        """Fraction of multi-word lines where translation == original (echo)."""
+        multiword = 0
+        echoes = 0
+        for i, text in enumerate(texts_list):
+            orig = (text or '').strip()
+            if len(orig.split()) <= 2:
+                continue
+            multiword += 1
+            if i < len(interpretations):
+                trans = (interpretations[i].get('translation') or '').strip()
+                if trans and trans.lower() == orig.lower():
+                    echoes += 1
+        return echoes / multiword if multiword else 0.0
+
+    # First attempt
+    prompt_content = _format_interpretation_prompt(segments_text, language_hint)
+    last_lookup = None  # set when we retry due to high echo ratio
+    last_echo_ratio = 1.0
+
     for attempt in range(max_retries):
         try:
             response = client.messages.create(
                 model="claude-sonnet-4-20250514",
                 max_tokens=8000,
-                messages=[{"role": "user", "content": INTERPRETATION_PROMPT.format(segments=segments_text)}]
+                messages=[{"role": "user", "content": prompt_content}]
             )
-
             interpretations = _extract_json_array(response.content[0].text)
+            lookup = _parse_batch_result(texts, interpretations)
+            echo_ratio = _echo_ratio(texts, interpretations)
 
-            lookup = {}
-            for i, text in enumerate(texts):
-                if i < len(interpretations):
-                    interp = interpretations[i]
-                    trans = (interp.get('translation') or '').strip()
-                    orig = (interp.get('original') or text or '').strip()
-                    # Accept only if we have a translation and it's not just the original echoed back
-                    if trans and trans.lower() != orig.lower():
-                        lookup[text.strip().lower()] = interp
-                    # Also accept short fillers (e.g. "Oh", "Hey") where model may reasonably echo
-                    elif trans and len(orig.split()) <= 2 and trans.lower() == orig.lower():
-                        lookup[text.strip().lower()] = interp
-
+            # If most multi-word lines were echoed and we have a non-English hint, retry once with stronger prompt
+            if echo_ratio > 0.5 and language_hint and language_hint.strip().lower() != "en" and attempt == 0:
+                time.sleep(1)
+                prompt_content = _format_interpretation_prompt(segments_text, language_hint) + "\n\nCRITICAL: The 'translation' field must contain only English. Translate each line to English; do not copy the original text into the translation field."
+                last_lookup = lookup
+                last_echo_ratio = echo_ratio
+                continue
+            # If this was a retry (we have last_lookup), return the result with fewer echoes
+            if last_lookup is not None:
+                return lookup if echo_ratio <= last_echo_ratio else last_lookup
             return lookup
-
         except json.JSONDecodeError:
             if attempt < max_retries - 1:
                 time.sleep(1 + attempt)
                 continue
-            return {}
+            return last_lookup if last_lookup is not None else {}
         except Exception:
             if attempt < max_retries - 1:
                 time.sleep(2 ** attempt)
                 continue
-            return {}
+            return last_lookup if last_lookup is not None else {}
 
-    return {}
+    return last_lookup if last_lookup is not None else {}
 
 
-def interpret_segments(segments: list) -> list:
+def interpret_segments(segments: list, language_hint: str = None) -> list:
     """
     Interpret lyrics with robust retry strategy:
     1. Deduplicate unique lines
-    2. Split into batches of ~25 lines (prevents max_tokens truncation)
-    3. Each batch gets independent retries (3 attempts)
-    4. After all batches, identify lines still missing translations
-    5. Gap-fill retry: one focused call for just the missing lines
-    6. Never throw away successful translations — graceful partial results
+    2. Split into batches of ~25 lines; run batches in parallel (Phase 1)
+    3. Gap-fill retry for missing lines; full retry if most failed
+    4. Never throw away successful translations — graceful partial results
     """
     import time
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     client = Anthropic()
 
     # Filter to segments with actual text
@@ -699,38 +836,38 @@ def interpret_segments(segments: list) -> list:
             unique_texts.append(s['text'])
             seen.add(text_lower)
 
-    # ── Phase 1: Batch interpretation ──
-    # Split into batches to avoid max_tokens truncation on long songs
+    # ── Phase 1: Batch interpretation (parallel) ──
     batches = []
     for i in range(0, len(unique_texts), INTERPRETATION_BATCH_SIZE):
         batches.append(unique_texts[i:i + INTERPRETATION_BATCH_SIZE])
 
-    # Interpret each batch independently — failures in one batch don't affect others
-    interp_lookup = {}  # {text_lower: interp_dict}
-    for batch in batches:
-        batch_result = _interpret_batch(batch, client)
-        interp_lookup.update(batch_result)
+    interp_lookup = {}
+    max_workers = min(len(batches), 6)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(_interpret_batch, batch, client, language_hint): batch
+            for batch in batches
+        }
+        for fut in as_completed(futures):
+            batch_result = fut.result()
+            interp_lookup.update(batch_result)
 
-    # ── Phase 2: Gap-fill retry for missing lines ──
+    # ── Phase 2: Gap-fill retry for missing lines (sequential) ──
     missing_texts = [t for t in unique_texts if t.strip().lower() not in interp_lookup]
 
     if missing_texts and len(missing_texts) <= len(unique_texts) * 0.5:
-        # Only gap-fill if ≤50% are missing (if more, the prompt/model might be refusing entirely)
-        # Use smaller batches for the retry to maximize success
         retry_batch_size = min(15, INTERPRETATION_BATCH_SIZE)
         for i in range(0, len(missing_texts), retry_batch_size):
             retry_batch = missing_texts[i:i + retry_batch_size]
-            time.sleep(1)  # Brief pause before retry
-            retry_result = _interpret_batch(retry_batch, client, max_retries=2)
+            time.sleep(1)
+            retry_result = _interpret_batch(retry_batch, client, language_hint, max_retries=2)
             interp_lookup.update(retry_result)
     elif missing_texts and len(missing_texts) > len(unique_texts) * 0.5:
-        # Most lines failed — likely a systemic issue. One full retry of everything.
         time.sleep(2)
         full_retry_lookup = {}
         for batch in batches:
-            batch_result = _interpret_batch(batch, client, max_retries=2)
+            batch_result = _interpret_batch(batch, client, language_hint, max_retries=2)
             full_retry_lookup.update(batch_result)
-        # Merge: only fill in lines still missing (don't overwrite successes)
         for key, val in full_retry_lookup.items():
             if key not in interp_lookup:
                 interp_lookup[key] = val
@@ -758,6 +895,64 @@ def interpret_segments(segments: list) -> list:
     return result
 
 
+def _replace_known_hallucinations(segments: list) -> list:
+    """Replace segments that exactly match known hallucination phrases (e.g. echoed prompt) with ♪."""
+    out = []
+    for seg in segments:
+        text = (seg.get("text") or "").strip()
+        if text in _KNOWN_HALLUCINATION_PHRASES:
+            out.append({"start": seg["start"], "end": seg["end"], "text": "♪"})
+        else:
+            out.append(dict(seg))
+    return out
+
+
+def merge_early_repeated_hallucinations(segments: list, early_sec: float = 90.0, max_text_len: int = 50) -> list:
+    """
+    Replace known hallucination phrases (e.g. echoed prompt) with ♪, then merge runs of
+    consecutive segments in the first part of the track that have the same short text (or ♪).
+    Leaves long repeated phrases (e.g. chorus) unchanged.
+    """
+    if not segments:
+        return segments
+    segments = _replace_known_hallucinations(segments)
+    result = []
+    i = 0
+    while i < len(segments):
+        seg = segments[i]
+        start = seg.get("start", 0)
+        if start > early_sec:
+            result.append(dict(seg))
+            i += 1
+            continue
+        text = (seg.get("text") or "").strip()
+        text_lower = text.lower()
+        # Merge only if same text is short or is ♪ (from known hallucinations)
+        can_merge = len(text) <= max_text_len or text_lower == "♪"
+        if not can_merge:
+            result.append(dict(seg))
+            i += 1
+            continue
+        j = i + 1
+        while j < len(segments) and segments[j].get("start", 0) <= early_sec:
+            t = (segments[j].get("text") or "").strip()
+            tl = t.lower()
+            if tl != text_lower or (len(t) > max_text_len and tl != "♪"):
+                break
+            j += 1
+        if j > i + 1:
+            result.append({
+                "start": seg["start"],
+                "end": segments[j - 1]["end"],
+                "text": "♪",
+            })
+            i = j
+        else:
+            result.append(dict(seg))
+            i += 1
+    return result
+
+
 def _is_instrumental_segment(seg: dict) -> bool:
     """True if segment is music/instrumental only (no real lyrics)."""
     import re
@@ -776,8 +971,9 @@ def _is_instrumental_segment(seg: dict) -> bool:
 def merge_instrumental_segments(segments: list) -> list:
     """
     Merge consecutive instrumental/music-only segments into one.
-    End time of merged intro is extended to the start of the first real lyric
-    so the player doesn't show 'music' while singing has already started.
+    Use the actual end of the instrumental run (run_end) so we don't show lyrics
+    ahead of the audio. Then ensure no segment starts before the previous ends
+    (clip overlapping starts) so sync stays correct.
     """
     if not segments:
         return segments
@@ -795,19 +991,23 @@ def merge_instrumental_segments(segments: list) -> list:
         while j < len(segments) and _is_instrumental_segment(segments[j]):
             run_end = segments[j]['end']
             j += 1
-        next_lyric_start = None
-        if j < len(segments):
-            next_lyric_start = segments[j]['start']
-        merged_end = next_lyric_start if next_lyric_start is not None else run_end
         result.append({
             'start': run_start,
-            'end': merged_end,
+            'end': run_end,
             'text': '♪',
             'romanized': '(instrumental)',
             'translation': 'Instrumental',
             'meaning': '',
         })
         i = j
+    # Clip any segment that starts before the previous one ends (avoids lyrics ahead of audio)
+    for k in range(1, len(result)):
+        prev_end = result[k - 1]['end']
+        if result[k]['start'] < prev_end:
+            result[k] = dict(result[k])
+            result[k]['start'] = prev_end
+        if result[k]['start'] >= result[k]['end']:
+            result[k]['end'] = result[k]['start'] + 0.01
     return result
 
 
@@ -1487,10 +1687,17 @@ def create_karaoke_player(audio_base64: str, segments: list, audio_format: str =
                 
                 analyser.getByteFrequencyData(dataArray);
                 
-                // Use only the lower half of the spectrum (bins 0–63): most musical energy
-                // is there; high bins are often near zero so half the bars never moved.
                 const useBins = Math.min(64, dataArray.length);
                 const binsPerBar = useBins / NUM_BARS;
+                // Bass floor: average of lowest bins so high-frequency bars (last few) still move with the beat
+                let bassSum = 0;
+                const bassRange = Math.min(8, dataArray.length);
+                for (let b = 0; b < bassRange; b++) bassSum += dataArray[b];
+                const bassFloor = bassSum / bassRange;
+                // Overall energy (mid + high) so last bars get a bit more life when track is loud
+                let energySum = 0;
+                for (let b = 0; b < useBins; b++) energySum += dataArray[b];
+                const energyAvg = energySum / useBins;
                 
                 waveBars.forEach((bar, i) => {{
                     const startBin = Math.floor(i * binsPerBar);
@@ -1499,6 +1706,11 @@ def create_karaoke_player(audio_base64: str, segments: list, audio_format: str =
                     for (let b = startBin; b < endBin; b++) {{
                         if (dataArray[b] > value) value = dataArray[b];
                     }}
+                    // Stronger floor for last 8 bars (high-freq bins are usually quiet) so they move with the beat
+                    const isLastEight = i >= NUM_BARS - 8;
+                    const bassBlend = isLastEight ? 0.5 + (i - (NUM_BARS - 8)) / 8 * 0.35 : 0.35;
+                    const energyBlend = isLastEight ? energyAvg * 0.25 : 0;
+                    value = Math.max(value, bassFloor * bassBlend + energyBlend);
                     const scale = 0.1 + (value / 255) * 0.9;
                     bar.style.transform = `scaleY(${{scale}})`;
                     bar.style.opacity = 0.4 + (value / 255) * 0.6;
@@ -2799,7 +3011,8 @@ if not has_karaoke:
                         "Still processing... hang tight!",
                     ]
                     with animated_status(detail_display, transcribe_messages, interval=2.0):
-                        segments = transcribe_with_timestamps(audio_path)
+                        segments, detected_language = transcribe_with_timestamps(audio_path)
+                    segments = merge_early_repeated_hallucinations(segments)
                     
                     # Count unique segments for optimization info
                     text_segments = [s for s in segments if s['text'].strip()]
@@ -2823,7 +3036,7 @@ if not has_karaoke:
                         "Building rich interpretations...",
                     ]
                     with animated_status(detail_display, interpret_messages, interval=2.5):
-                        interpreted_segments = interpret_segments(segments)
+                        interpreted_segments = interpret_segments(segments, language_hint=detected_language)
                         interpreted_segments = merge_instrumental_segments(interpreted_segments)
 
                     # Surface partial translation warnings
@@ -2968,14 +3181,69 @@ if not has_karaoke:
                 f'<div style="margin-top:8px;font-size:0.75rem;color:rgba(0,0,0,0.65);">▶ Try this</div>'
                 f'</a></div>'
             )
+        # Infinite carousel: rotate DOM elements on arrow click
         _carousel_html = f"""
-<div style="overflow-x:auto;overflow-y:hidden;padding:8px 0;margin:-8px 0;-webkit-overflow-scrolling:touch;">
-<div style="display:flex;gap:12px;min-height:1px;">
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"></head><body style="margin:0;padding:0;overflow:hidden;">
+<div style="display:flex;align-items:center;gap:8px;margin:8px 0;">
+<button type="button" id="carousel-prev" aria-label="Scroll left" style="flex-shrink:0;width:40px;height:40px;border-radius:50%;border:1px solid rgba(0,0,0,0.15);background:#f0f2f6;cursor:pointer;font-size:1.2rem;display:flex;align-items:center;justify-content:center;">‹</button>
+<div id="carousel-track" style="overflow:hidden;flex:1;padding:8px 0;">
+<div id="carousel-inner" style="display:flex;gap:12px;transition:transform 0.35s ease;">
 {''.join(_cards_html)}
 </div>
 </div>
+<button type="button" id="carousel-next" aria-label="Scroll right" style="flex-shrink:0;width:40px;height:40px;border-radius:50%;border:1px solid rgba(0,0,0,0.15);background:#f0f2f6;cursor:pointer;font-size:1.2rem;display:flex;align-items:center;justify-content:center;">›</button>
+</div>
+<script>
+(function() {{
+  var inner = document.getElementById('carousel-inner');
+  var prev = document.getElementById('carousel-prev');
+  var next = document.getElementById('carousel-next');
+  if (!inner || !prev || !next) return;
+  var moving = false;
+  function getCardWidth() {{
+    var card = inner.children[0];
+    if (!card) return 212;
+    var style = getComputedStyle(card);
+    return card.offsetWidth + parseInt(style.marginRight || 0) + 12;
+  }}
+  next.addEventListener('click', function() {{
+    if (moving) return;
+    moving = true;
+    var w = getCardWidth();
+    inner.style.transition = 'transform 0.35s ease';
+    inner.style.transform = 'translateX(-' + w + 'px)';
+    inner.addEventListener('transitionend', function handler() {{
+      inner.removeEventListener('transitionend', handler);
+      inner.style.transition = 'none';
+      inner.style.transform = 'translateX(0)';
+      inner.appendChild(inner.children[0]);
+      moving = false;
+    }});
+  }});
+  prev.addEventListener('click', function() {{
+    if (moving) return;
+    moving = true;
+    var w = getCardWidth();
+    inner.style.transition = 'none';
+    inner.insertBefore(inner.children[inner.children.length - 1], inner.children[0]);
+    inner.style.transform = 'translateX(-' + w + 'px)';
+    requestAnimationFrame(function() {{
+      requestAnimationFrame(function() {{
+        inner.style.transition = 'transform 0.35s ease';
+        inner.style.transform = 'translateX(0)';
+        inner.addEventListener('transitionend', function handler() {{
+          inner.removeEventListener('transitionend', handler);
+          moving = false;
+        }});
+      }});
+    }});
+  }});
+}})();
+</script>
+</body></html>
 """
-        st.markdown(_carousel_html, unsafe_allow_html=True)
+        st.components.v1.html(_carousel_html, height=260, scrolling=False)
 
 st.divider()
 st.caption("© 2026 Abhinav Deshmukh · Lyrics and interpretations are AI-generated; use for learning only.")
