@@ -2991,6 +2991,7 @@ if not has_karaoke:
                         time_display.caption(f"⏱️ {elapsed:.1f}s elapsed{tr}")
                     
                     # Step 1: Download
+                    _current_step = "Download"
                     update_progress(1, "Fetching audio from YouTube...", est_download)
                     download_messages = [
                         "Connecting to YouTube...",
@@ -3001,6 +3002,7 @@ if not has_karaoke:
                         audio_path = download_audio(st.session_state['selected_url'], tmp_dir)
                     
                     # Step 2: Transcribe (auto-detect language)
+                    _current_step = "Transcribe"
                     update_progress(2, "Using Whisper AI (auto-detecting language)...", est_transcribe)
                     transcribe_messages = [
                         "Uploading audio to OpenAI...",
@@ -3025,6 +3027,7 @@ if not has_karaoke:
                     time_module.sleep(0.5)  # Brief pause to show the count
                     
                     # Step 3: Interpret with Claude Sonnet
+                    _current_step = "Interpret"
                     update_progress(3, f"Claude Sonnet interpreting {unique_count} unique lines...")
                     interpret_messages = [
                         "Sending lyrics to Claude Sonnet...",
@@ -3105,8 +3108,11 @@ if not has_karaoke:
                     st.rerun()
                     
                 except Exception as e:
+                    import traceback
+                    traceback.print_exc()
                     err_msg = str(e)[:200]
-                    st.error("Something went wrong while processing this song.")
+                    step_label = locals().get('_current_step', 'Unknown')
+                    st.error(f"Something went wrong during **{step_label}**.")
                     st.caption(f"Details: {err_msg}")
                     if st.button("🔄 Try again", type="primary"):
                         st.session_state.pop('karaoke_data', None)
