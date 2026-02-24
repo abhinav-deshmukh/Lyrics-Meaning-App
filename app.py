@@ -422,8 +422,8 @@ def _download_via_cobalt(url: str, output_dir: str) -> Optional[str]:
         if attempt < 1:
             _time.sleep(1)
 
-    print(f"[Cobalt] FAILED after 2 attempts. Last error: {last_error}. Cobalt URL: {cobalt_url}")
-    return None
+    print(f"[Cobalt] FAILED after 2 attempts. Last error: {last_error}. Cobalt URL: {cobalt_url}", flush=True)
+    return ("cobalt", last_error)
 
 
 def _download_via_ytdlp(url: str, output_dir: str) -> Optional[str]:
@@ -472,8 +472,8 @@ def _download_via_ytdlp(url: str, output_dir: str) -> Optional[str]:
         if attempt < 1:
             _time.sleep(2)
 
-    print(f"[yt-dlp] FAILED after 2 attempts. Last error: {last_error}")
-    return None
+    print(f"[yt-dlp] FAILED after 2 attempts. Last error: {last_error}", flush=True)
+    return ("ytdlp", last_error)
 
 
 def download_audio(url: str, output_dir: str) -> str:
@@ -481,19 +481,25 @@ def download_audio(url: str, output_dir: str) -> str:
     Download audio from YouTube URL.
     Strategy: Cobalt API first (fast, no JS runtime needed), yt-dlp fallback.
     """
+    cobalt_err = ""
+    ytdlp_err = ""
+
     # Try Cobalt first — much faster and doesn't need Node.js
-    path = _download_via_cobalt(url, output_dir)
-    if path:
-        return path
+    result = _download_via_cobalt(url, output_dir)
+    if isinstance(result, str):
+        return result
+    if isinstance(result, tuple):
+        cobalt_err = result[1] or "unknown"
 
     # Fallback to yt-dlp
-    path = _download_via_ytdlp(url, output_dir)
-    if path:
-        return path
+    result = _download_via_ytdlp(url, output_dir)
+    if isinstance(result, str):
+        return result
+    if isinstance(result, tuple):
+        ytdlp_err = result[1] or "unknown"
 
     raise Exception(
-        "Download failed: both Cobalt API and yt-dlp were unable to fetch the audio. "
-        "Check Railway logs for [Cobalt] and [yt-dlp] error details."
+        f"Download failed. Cobalt: {cobalt_err} | yt-dlp: {ytdlp_err}"
     )
 
 # Chunking: process long audio in pieces to avoid timeouts and improve reliability
